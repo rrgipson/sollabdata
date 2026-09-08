@@ -14,7 +14,7 @@ import os
 
 import numpy as np
 import pandas as pd
-from cclib.parser.utils import convertor
+from cclib.parser.utils import convertor # type: ignore
 
 from .labdata import LabData
 
