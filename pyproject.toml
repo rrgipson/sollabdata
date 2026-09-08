@@ -17,6 +17,31 @@ classifiers = [
 ]
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
+dependencies = [
+    "pandas>=1.3",
+    "numpy>=1.20",
+    "matplotlib>=3.4",
+    "plotly>=5.0",
+    "tabulate>=0.8.9",  # required by info_df.to_markdown(), used in LabData.to_md
+    "scipy>=1.7",       # least_squares/quad for the AbsCD and MCD fitting routines
+    # The DFT class needs RG's cclib fork (extra frozen-coordinate bond/angle/dihedral
+    # parsing for ORCA and Gaussian), not the PyPI release. Install it separately with
+    #   pip install -e /home/robby/retry_cclib/my_cclib
+    # and keep it out of `dependencies` so pip cannot silently pull upstream over it.
+]
+
+[project.optional-dependencies]
+# Extras for working in notebooks: `pip install -e ".[notebook]"`
+notebook = ["jupyterlab", "ipython"]
 
 [project.urls]
 Homepage = "https://github.com/rrgipson/sollabdata"
+
+# Explicit src-layout discovery. setuptools would auto-detect this, but stating it
+# avoids surprises if stray top-level directories are added later.
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Written by RG (Robert Gipson). Claude (Opus 5) added the runtime `dependencies`
+# list (previously absent, so installs pulled in nothing), the `notebook` extra,
+# and the explicit [tool.setuptools.packages.find] src-layout section.
