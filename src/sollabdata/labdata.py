@@ -311,7 +311,9 @@ class LabData:
         if ids is not None:
             plot_df = plot_df.loc[plot_df["id"].isin(_as_list(ids))]
         if not len(plot_df):
-            raise ValueError("No rows left to plot after applying ids/selection_criteria.")
+            raise ValueError(
+                "No rows left to plot after applying ids/selection_criteria."
+            )
 
         # Set up y data structure, should be a list to handle plotting multiple y values stacked
         first_data = plot_df["data"].iloc[0]
@@ -388,8 +390,7 @@ class LabData:
         )
         # dedent first, then substitute the (multi-line) plot calls in via replace
         # rather than str.format, so ids containing braces cannot break the template.
-        template = textwrap.dedent(
-            f"""\
+        template = textwrap.dedent(f"""\
             # {var_name} = VARNAME
             fig,axs = plt.subplots(figsize=[10,6])
 
@@ -403,8 +404,7 @@ class LabData:
             axs.set_ylim()
             # axs.ticklabel_format(axis='x',style='sci',scilimits=(3,3),useMathText=True)
 
-            plt.show()"""
-        )
+            plt.show()""")
         print(template.replace("PLOT_LINES", plot_lines))
 
     def prep_animation_plt(
@@ -415,9 +415,7 @@ class LabData:
         Emits a loop that draws one figure per row, with all previously drawn
         traces faded behind the current one -- useful for stepping through a series.
         """
-        print(
-            textwrap.dedent(
-                f"""\
+        print(textwrap.dedent(f"""\
                 # {var_name} = VARNAME
                 {var_name}.info_df['plot_label'] = {var_name}.info_df['id']
                 # print({var_name}.info_df[['id', 'plot_label']])
@@ -441,9 +439,7 @@ class LabData:
                         axs.set_ylim()
                         # axs.ticklabel_format(axis='x',style='sci',scilimits=(3,3),useMathText=True)
 
-                        plt.show()"""
-            )
-        )
+                        plt.show()"""))
 
     # -- row selection / batch operations ----------------------------------
 
