@@ -33,6 +33,8 @@ dependencies = [
 [project.optional-dependencies]
 # Extras for working in notebooks: `pip install -e ".[notebook]"`
 notebook = ["jupyterlab", "ipython"]
+# Extras for running the test suite: `pip install -e ".[dev]"`
+dev = ["pytest>=7.0"]
 
 [project.urls]
 Homepage = "https://github.com/rrgipson/sollabdata"
@@ -42,6 +44,14 @@ Homepage = "https://github.com/rrgipson/sollabdata"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+# `pytest` with no arguments, run from the repo root, finds the suite.
+testpaths = ["tests"]
+# Show local variables in tracebacks and treat unregistered marks as errors, so a
+# typo'd @pytest.mark.foo fails loudly instead of being silently ignored.
+addopts = "--showlocals --strict-markers"
+
 # Written by RG (Robert Gipson). Claude (Opus 5) added the runtime `dependencies`
-# list (previously absent, so installs pulled in nothing), the `notebook` extra,
-# and the explicit [tool.setuptools.packages.find] src-layout section.
+# list (previously absent, so installs pulled in nothing), the `notebook` and `dev`
+# extras, the [tool.pytest.ini_options] section, and the explicit
+# [tool.setuptools.packages.find] src-layout section.
