@@ -23,12 +23,14 @@ DATA_DIR = Path(__file__).parent / "data" / "abscd"
 def abscd_spectra():
     """Two AbsCD spectra loaded from the J-1700 scans in tests/data/abscd/.
 
-    The first scan is a positive gaussian feature at 600nm (inten +1 mdeg) with a width of 100nm, 
+    The first scan is a positive gaussian feature at 600nm (inten +1 mdeg) with a width of 100nm,
     and the second scan is a negative feature (-1 mdeg) at 800nm with a width of 200nm.
     """
     # DFT() with path_to_raw_data and no info_csv scans the folder for .json files
     # and builds a generic info_df, using each file's stem as its id.
-    return AbsCD(path_to_raw_data=str(DATA_DIR), info_csv=str(DATA_DIR)+"/abscd_test_info.csv")
+    return AbsCD(
+        path_to_raw_data=str(DATA_DIR), info_csv=str(DATA_DIR) + "/abscd_test_info.csv"
+    )
 
 
 def test_loads_one_row_per_scan(abscd_spectra):
@@ -43,11 +45,30 @@ def test_loads_one_row_per_scan(abscd_spectra):
     assert abscd_spectra.info_df.at[1, "id"] == "Negative"
     assert abscd_spectra.info_df.at[0, "File"] == "01_pos-1.csv"
 
-    # The `data` column holds a nested DataFrame -- this data should 
+
+def test_loads_data_from_j1700(abscd_spectra):
+    # The `data` column holds a nested DataFrame -- this data should
     # be formatted with npts from .csv as number of rows and 4 columns
     data = abscd_spectra.info_df.at[0, "data"]
     assert data.shape == (1591, 5)
 
+
+def test_fit_gaussians(abscd_spectra):
+    # Test fitting procedure.
+    results, details, fit = abscd_spectra.fit_gaussians(
+        energies=[700],
+        fwhm=[150],
+        intens=[1.5],
+        id="Positive",
+        x_col="NANOMETERS",
+        y_cols="CD/DC [mdeg]",
+    )
+    # Test correctly fitted center
+    assert results[0] == pytest.approx(600, abs=0.1)
+    # Test correctly fitted fwhm
+    assert results[1] == pytest.approx(100, abs=0.1)
+    # Test correctly fitted intensity
+    assert results[2] == pytest.approx(1, abs=0.1)
 
 
 # ---------------------------------------------------------------------------
