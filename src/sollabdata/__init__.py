@@ -19,29 +19,23 @@ imports its own parent, so ``labdata`` must not import them back (that would be 
 circular import). This module is the single place the package is assembled.
 """
 
-from .labdata import DATA_EXTENSIONS, DEFAULT_COLORS, Lab_Data, LabData
+from .labdata import DATA_EXTENSIONS, DEFAULT_COLORS, LabData
 
 # Child classes, one per experiment/instrument type. abscd comes before mcd because
 # MCD subclasses AbsCD.
-from .abscd import AbsCD, AbsCD_Data
-from .dft import DFT, DFT_Data
-from .mcd import MCD, MCD_Data, VTVH_MCD, VTVH_MCD_Data
+from .abscd import AbsCD
+from .dft import DFT
+from .mcd import MCD, VTVH_MCD
 
 __version__ = "0.0.1"
 
 #: Public API -- also controls what `from sollabdata import *` exposes.
-#: The *_Data names are deprecated aliases kept for existing notebooks.
 __all__ = [
     "LabData",
     "AbsCD",
     "MCD",
     "VTVH_MCD",
     "DFT",
-    "Lab_Data",
-    "AbsCD_Data",
-    "MCD_Data",
-    "VTVH_MCD_Data",
-    "DFT_Data",
     "DEFAULT_COLORS",
     "DATA_EXTENSIONS",
     "__version__",
@@ -52,6 +46,7 @@ __all__ = [
 # Code written by RG (Robert Gipson).
 # Claude (Opus 5) populated this previously empty file: package docstring with the
 # class hierarchy, relative imports re-exporting LabData plus the AbsCD/MCD/
-# VTVH_MCD/DFT child classes (and their deprecated *_Data aliases) and the module
-# constants, a `__version__`, and an explicit `__all__`.
+# VTVH_MCD/DFT child classes and the module constants, a `__version__`, and an
+# explicit `__all__`. The deprecated Lab_Data/AbsCD_Data/MCD_Data/VTVH_MCD_Data/
+# DFT_Data aliases were later removed once nothing referenced them.
 # ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ import pandas as pd
 from scipy.integrate import quad
 from scipy.optimize import least_squares
 
-from .abscd import AbsCD
+from .abscd import X_UNITS_RE, Y_UNITS_RE, AbsCD
 from .labdata import DEFAULT_COLORS
 
 # Default matplotlib color cycle for the satmag plots. A module-level tuple rather
@@ -585,7 +585,7 @@ class MCD(AbsCD):
 
         if inplace:
             self.info_df = sub_data.info_df.copy()
-        # Return the new MCD_Data object
+        # Return the new MCD object
         return sub_data
 
     def add_deps(self, conc, conc_units="M", path_length=0.3):
@@ -1228,11 +1228,13 @@ class VTVH_MCD(MCD):
                 with open(file_path, "r") as f:
                     count = 1
                     for line in f:
-                        if "UNITS" in line and "X" in line:
+                        # Same anchored XUNITS/Y<n>UNITS patterns AbsCD.load uses; see
+                        # the comment beside their definition in abscd.py.
+                        if X_UNITS_RE.match(line):
                             xstr = line.split(",")[-1].replace("\n", "")
                             if xstr not in xlabels:
                                 xlabels.append(xstr)
-                        elif "UNITS" in line and "Y" in line:
+                        elif Y_UNITS_RE.match(line):
                             ystr = line.split(",")[-1].replace("\n", "")
                             if ystr not in ylabels:
                                 ylabels.append(ystr)
@@ -1492,11 +1494,6 @@ class VTVH_MCD(MCD):
         return averaged_data
 
 
-#: Backwards-compatible aliases for the old class names used in existing notebooks.
-MCD_Data = MCD
-VTVH_MCD_Data = VTVH_MCD
-
-
 # ---------------------------------------------------------------------------
 # Code written by RG (Robert Gipson).
 # Claude (Opus 5) reviewed and adjusted this file:
@@ -1505,7 +1502,7 @@ VTVH_MCD_Data = VTVH_MCD
 #     `AbsCD_Data` did not exist under that name, and math/os/numpy/pandas/scipy
 #     were used without being imported.
 #   - Renamed MCD_Data -> MCD and VTVH_MCD_Data -> VTVH_MCD to match the package's
-#     other classes (aliases kept above), and replaced the string parameter
+#     other classes, and replaced the string parameter
 #     annotations on both __init__s with real type hints.
 #   - subtract(): sub_id now resets per zero-field scan (a zero that matched
 #     nothing re-subtracted the previous zero's list), and next_zero/prev_zero are
@@ -1525,6 +1522,8 @@ VTVH_MCD_Data = VTVH_MCD
 #     was a no-op (no inplace, no assignment); os.path.join for paths; npts resets
 #     per file; both load()s now accept **kwargs and return True.
 #   - quick_plot() passes through to the parent by keyword rather than by position.
+#   - VTVH_MCD.load() reuses abscd's anchored X_UNITS_RE / Y_UNITS_RE header
+#     patterns instead of keeping its own copy of the loose "UNITS" substring test.
 #   - loc_field() copies its slice; subtract_component() skips the deep copy when
 #     inplace=True; replaced `self.info_df.at[0,'data']` with `['data'].iloc[0]`.
 #   - Corrected three numerical issues, each marked "CHANGED (Claude)" at the line:

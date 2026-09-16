@@ -9,6 +9,7 @@ conversions, and Gaussian band fitting.
 from __future__ import annotations
 
 import os
+import re
 
 import numpy as np
 import pandas as pd
@@ -25,6 +26,15 @@ CD = "CD/DC [mdeg]"
 
 # np.trapz was renamed np.trapezoid in numpy 2.0 and the old name now warns/errors
 _trapezoid = getattr(np, "trapezoid", None) or np.trapz
+
+# The J-1700 labels its channels JCAMP-style: XUNITS for the x axis, then YUNITS,
+# Y2UNITS, Y3UNITS, ... for the y channels in column order -- hence the optional
+# digits. Anchored to the start of the line, because the older `"UNITS" in line and
+# "X" in line` test misread any y channel whose unit string happened to contain an
+# "X" (YUNITS,FLUX) as the x-axis label. Shared with VTVH_MCD.load in mcd.py, which
+# parses the same header.
+X_UNITS_RE = re.compile(r"^X\d*UNITS\s*,")
+Y_UNITS_RE = re.compile(r"^Y\d*UNITS\s*,")
 
 
 class AbsCD(LabData):
@@ -90,11 +100,11 @@ class AbsCD(LabData):
                 with open(file_path, "r") as f:
                     count = 1
                     for line in f:
-                        if "UNITS" in line and "X" in line:
+                        if X_UNITS_RE.match(line):
                             xstr = line.split(",")[-1].replace("\n", "")
                             if xstr not in xlabels:
                                 xlabels.append(xstr)
-                        elif "UNITS" in line and "Y" in line:
+                        elif Y_UNITS_RE.match(line):
                             ystr = line.split(",")[-1].replace("\n", "")
                             if ystr not in ylabels:
                                 ylabels.append(ystr)
@@ -445,7 +455,12 @@ class AbsCD(LabData):
             nu_bds = np.inf
         # iterate through ys, calc and store areas, and normalize
         for k in range(len(ys)):
-            areas[k] = _trapezoid(abs(ys[k]), x=xs if same_x else xs[k])
+            # abs() on the integral, not just on ys: the J-1700 writes x descending
+            # (DELTAX,-1), so the integral comes back negative. The sign cancels out
+            # for the data and intensities, but dividing low_bds/up_bds by a negative
+            # area swaps them, and least_squares then rejects the bounds outright.
+            # The area is only ever used as a magnitude scale factor.
+            areas[k] = abs(_trapezoid(abs(ys[k]), x=xs if same_x else xs[k]))
             if scalar is not None:
                 areas[k] = areas[k] / scalar[k]
             nys.append(np.divide(ys[k], areas[k]))
@@ -625,18 +640,14 @@ class AbsCD(LabData):
         # return fit
 
 
-#: Backwards-compatible alias for the old class name used in existing notebooks.
-AbsCD_Data = AbsCD
-
-
 # ---------------------------------------------------------------------------
 # Code written by RG (Robert Gipson).
 # Claude (Opus 5) reviewed and adjusted this file:
 #   - Added the missing `os` / `numpy` / `pandas` / `plotly.express` imports; the
 #     module referenced pd, np and px without importing any of them, so it could
 #     not be imported at all.
-#   - Renamed the class to AbsCD (PEP 8, matches the module) with an AbsCD_Data
-#     alias, and merged the duplicated class docstring.
+#   - Renamed the class to AbsCD (PEP 8, matches the module) and merged the
+#     duplicated class docstring.
 #   - Replaced the string parameter annotations on __init__ with real type hints.
 #   - The "drop unnamed columns" step now checks `self.info_df`, so it also runs
 #     when info_df came from info_csv via process().
@@ -660,4 +671,8 @@ AbsCD_Data = AbsCD
 #     quick_plot a flat px.line figure raised "(row, col) pair sent is out of
 #     range" whenever more than one y column was fitted.
 #   - fix_changeover() returns instead of falling through to a success message.
+#   - Channel labels are matched with anchored X_UNITS_RE / Y_UNITS_RE patterns
+#     (XUNITS, YUNITS, Y2UNITS, ...) rather than `"UNITS" in line and "X" in line`,
+#     which misread a y channel whose unit contained an "X" (e.g. FLUX) as the x
+#     axis and shifted every column name by one. Shared with VTVH_MCD.load.
 # ---------------------------------------------------------------------------

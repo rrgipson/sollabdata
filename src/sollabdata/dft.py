@@ -384,17 +384,13 @@ class DFT(LabData):
         return dihedral
 
 
-#: Backwards-compatible alias for the old class name used in existing notebooks.
-DFT_Data = DFT
-
-
 # ---------------------------------------------------------------------------
 # Code written by RG (Robert Gipson).
 # Claude (Opus 5) reviewed and adjusted this file:
 #   - Added the missing `os` / `numpy` / `pandas` imports; the module used os.walk,
 #     pd and np without importing any of them, so it could not be imported.
 #   - Replaced the string parameter annotations on __init__ with real type hints,
-#     and the stale 'DFT_Data' annotations with the actual DFT class (alias kept).
+#     and the stale 'DFT_Data' annotations with the actual DFT class.
 #   - The "drop unnamed columns" step now checks `self.info_df`, so it also runs
 #     when info_df came from info_csv via process().
 #   - read(): resolves info_csv relative to path_to_raw_data when it is a bare file

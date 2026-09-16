@@ -4,7 +4,8 @@ Run the whole suite from the repo root:
 
     pytest
 
-Fixture data lives in tests/data/abscd/.
+Fixture data lives in tests/data/abscd/: two real J-1700 exports plus the info csv
+that keys them.
 """
 
 from pathlib import Path
@@ -15,8 +16,12 @@ from sollabdata import AbsCD
 
 # Path to the fixture folder, resolved relative to THIS file rather than to the
 # current working directory -- so the tests pass no matter where pytest is run from.
-# __file__ is tests/test_dft.py, so .parent is tests/.
+# __file__ is tests/test_abscd.py, so .parent is tests/.
 DATA_DIR = Path(__file__).parent / "data" / "abscd"
+
+# The channels the J-1700 wrote, in column order. The x label comes from the XUNITS
+# header line and the y labels from YUNITS/Y2UNITS/Y3UNITS/Y4UNITS.
+EXPECTED_COLUMNS = ["NANOMETERS", "CD/DC [mdeg]", "DC [V]", "HT [V]", "ABSORBANCE"]
 
 
 @pytest.fixture
@@ -25,12 +30,15 @@ def abscd_spectra():
 
     The first scan is a positive gaussian feature at 600nm (inten +1 mdeg) with a width of 100nm,
     and the second scan is a negative feature (-1 mdeg) at 800nm with a width of 200nm.
+    Both also carry an ABSORBANCE channel peaking at 1.0 at the same wavelength.
+
+    A pytest "fixture" is a named setup function: any test taking an argument called
+    `abscd_spectra` gets this return value, rebuilt fresh for that test. That
+    isolation matters here because most AbsCD methods mutate info_df in place.
     """
-    # DFT() with path_to_raw_data and no info_csv scans the folder for .json files
-    # and builds a generic info_df, using each file's stem as its id.
-    return AbsCD(
-        path_to_raw_data=str(DATA_DIR), info_csv=str(DATA_DIR) + "/abscd_test_info.csv"
-    )
+    # A bare info_csv file name is resolved against path_to_raw_data, and is excluded
+    # from the data files that get loaded.
+    return AbsCD(path_to_raw_data=str(DATA_DIR), info_csv="abscd_test_info.csv")
 
 
 def test_loads_one_row_per_scan(abscd_spectra):
@@ -47,15 +55,21 @@ def test_loads_one_row_per_scan(abscd_spectra):
 
 
 def test_loads_data_from_j1700(abscd_spectra):
-    # The `data` column holds a nested DataFrame -- this data should
-    # be formatted with npts from .csv as number of rows and 4 columns
+    # The `data` column holds a nested DataFrame -- NPOINTS from the .csv header as
+    # the number of rows, and one column per channel (1 x + 4 y = 5).
     data = abscd_spectra.info_df.at[0, "data"]
     assert data.shape == (1591, 5)
 
+    # Assert the names too, not just the count: they are derived by string-matching
+    # the header lines, which is the fragile part of the parser.
+    assert list(data.columns) == EXPECTED_COLUMNS
+
 
 def test_fit_gaussians(abscd_spectra):
-    # Test fitting procedure.
-    results, details, fit = abscd_spectra.fit_gaussians(
+    # Test fitting procedure. fit_gaussians returns (results, details, fit):
+    # the raw parameter array, a tidy per-band DataFrame, and the scipy result.
+    # Underscore-prefixed names mark the two we do not assert on here.
+    _results, details, _fit = abscd_spectra.fit_gaussians(
         energies=[700],
         fwhm=[150],
         intens=[1.5],
@@ -63,14 +77,165 @@ def test_fit_gaussians(abscd_spectra):
         x_col="NANOMETERS",
         y_cols="CD/DC [mdeg]",
     )
+    # Assert on the named `details` columns rather than positions in `results`, so
+    # these do not silently break if the fitvars packing order ever changes.
     # Test correctly fitted center
-    assert results[0] == pytest.approx(600, abs=0.1)
+    assert details.at[0, "Energy"] == pytest.approx(600, abs=0.1)
     # Test correctly fitted fwhm
-    assert results[1] == pytest.approx(100, abs=0.1)
+    assert details.at[0, "FWHM"] == pytest.approx(100, abs=0.1)
     # Test correctly fitted intensity
-    assert results[2] == pytest.approx(1, abs=0.1)
+    assert details.at[0, "Inten_y0"] == pytest.approx(1, abs=0.1)
+
+
+def test_fit_gaussians_negative_feature(abscd_spectra):
+    """The second scan's band is negative, which is a different path through resid()."""
+    _results, details, _fit = abscd_spectra.fit_gaussians(
+        energies=[750],
+        fwhm=[250],
+        intens=[-1.5],
+        id="Negative",
+        x_col="NANOMETERS",
+        y_cols="CD/DC [mdeg]",
+    )
+    assert details.at[0, "Energy"] == pytest.approx(800, abs=0.1)
+    assert details.at[0, "FWHM"] == pytest.approx(200, abs=0.1)
+    assert details.at[0, "Inten_y0"] == pytest.approx(-1, abs=0.1)
+
+
+def test_fit_gaussians_accepts_non_binding_bounds(abscd_spectra):
+    """Passing bounds must not raise, and slack bounds must not distort the answer.
+
+    The J-1700 writes x descending (DELTAX,-1), so the area integral comes back
+    negative. Dividing low_bds/up_bds by a negative area swaps them, and
+    least_squares then rejected the bounds outright with "Each lower bound must be
+    strictly less than each upper bound".
+
+    The true values sit well inside this box, so this test says nothing about
+    whether bounds are ENFORCED -- that is what the clamping test below is for.
+    What it does pin is that supplying slack bounds still recovers the same
+    parameters as the unconstrained fit above.
+    """
+    _results, details, _fit = abscd_spectra.fit_gaussians(
+        energies=[700],
+        fwhm=[150],
+        intens=[1.5],
+        id="Positive",
+        x_col="NANOMETERS",
+        y_cols="CD/DC [mdeg]",
+        low_bds=[500, 50, 0.1],
+        up_bds=[700, 200, 5.0],
+    )
+    assert details.at[0, "Energy"] == pytest.approx(600, abs=0.1)
+    assert details.at[0, "FWHM"] == pytest.approx(100, abs=0.1)
+    assert details.at[0, "Inten_y0"] == pytest.approx(1, abs=0.1)
+
+
+@pytest.mark.parametrize(
+    ("guess", "low_bds", "up_bds", "column", "at_the_wall"),
+    [
+        # Inten_y0 is the slice fit_gaussians area-normalizes internally, so these
+        # two cases are the ones that genuinely exercise that normalization.
+        pytest.param(
+            ([600], [100], [0.3]), [400, 50, 0.1], [800, 200, 0.5], "Inten_y0", 0.5,
+            id="intensity_ceiling",
+        ),
+        pytest.param(
+            ([600], [100], [3.0]), [400, 50, 2.0], [800, 200, 5.0], "Inten_y0", 2.0,
+            id="intensity_floor",
+        ),
+        # Energy and FWHM bounds pass through unnormalized; included as a control.
+        pytest.param(
+            ([500], [100], [0.9]), [400, 50, 0.1], [550, 200, 5.0], "Energy", 550.0,
+            id="energy_ceiling",
+        ),
+    ],
+)
+def test_fit_gaussians_clamps_to_bounds(
+    abscd_spectra, guess, low_bds, up_bds, column, at_the_wall
+):
+    """A bound that excludes the true value must stop the fit at the wall.
+
+    Truth for this scan is Energy=600, FWHM=100, Inten_y0=1. Each case boxes the
+    true value out, so a fit that quietly discarded its bounds would sail past to
+    the truth and fail the assertion -- which is what makes this test, rather than
+    the slack-bounds one above, the evidence that bounds are enforced.
+
+    Note the initial guess has to stay INSIDE the box: least_squares rejects an
+    out-of-bounds guess with "Initial guess is outside of provided bounds" before
+    it ever starts iterating.
+
+    `@pytest.mark.parametrize` runs the body once per case, reporting each under
+    its own `id` so a single failing case is named in the output.
+    """
+    energies, fwhm, intens = guess
+    _results, details, _fit = abscd_spectra.fit_gaussians(
+        energies=energies,
+        fwhm=fwhm,
+        intens=intens,
+        id="Positive",
+        x_col="NANOMETERS",
+        y_cols="CD/DC [mdeg]",
+        low_bds=low_bds,
+        up_bds=up_bds,
+    )
+    assert details.at[0, column] == pytest.approx(at_the_wall, rel=1e-4)
+
+
+def test_channel_labels_come_from_anchored_header_keys(tmp_path):
+    """A y channel whose unit string contains an "X" is still a y channel.
+
+    `tmp_path` is a builtin pytest fixture: a fresh empty directory per test,
+    cleaned up afterwards. Handy for writing a tiny synthetic input rather than
+    committing another fixture file.
+
+    The header keys are XUNITS then YUNITS, Y2UNITS, Y3UNITS, ... -- so the parser
+    matches on those anchored keys. Testing against "FLUX" because the earlier
+    `"UNITS" in line and "X" in line` check classified it as the x axis, which
+    silently shifted every column name over by one.
+    """
+    scan = tmp_path / "flux_scan.csv"
+    scan.write_text(
+        "TITLE,synthetic\n"
+        "XUNITS,NANOMETERS\n"
+        "YUNITS,FLUX\n"          # contains an X, but is a y channel
+        "Y2UNITS,ABSORBANCE\n"
+        "NPOINTS,3\n"
+        "XYDATA\n"
+        "600,1.0,0.5\n"
+        "599,2.0,0.6\n"
+        "598,3.0,0.7\n"
+    )
+
+    spectra = AbsCD(path_to_raw_data=str(tmp_path))
+    data = spectra.info_df.at[0, "data"]
+
+    assert list(data.columns) == ["NANOMETERS", "FLUX", "ABSORBANCE"]
+    assert data.shape == (3, 3)
+    # and the values landed under the right headings
+    assert data["FLUX"].tolist() == [1.0, 2.0, 3.0]
+    assert data["ABSORBANCE"].tolist() == [0.5, 0.6, 0.7]
+
+
+def test_add_eps_scales_by_concentration(abscd_spectra):
+    """eps = A / (c * l), with c read per-row from the info_csv Conc column."""
+    abscd_spectra.add_eps("Conc", conc_units="mM", path_length=1)
+
+    # Each scan's ABSORBANCE peaks at 1.0 at its own feature wavelength, so:
+    #   scan 1: A=1.0 at 600nm, c=1.0mM -> eps = 1.0/1e-3 = 1000
+    #   scan 2: A=1.0 at 800nm, c=2.0mM -> eps = 1.0/2e-3 =  500
+    # The two rows having DIFFERENT concentrations is the point: a bug that reached
+    # for the wrong row's Conc would show up here and nowhere else.
+    for idx, peak_nm, expected in [(0, 600.0, 1000.0), (1, 800.0, 500.0)]:
+        data = abscd_spectra.info_df.at[idx, "data"]
+        at_peak = data.loc[data["NANOMETERS"] == peak_nm]
+        assert float(at_peak["eps"].iloc[0]) == pytest.approx(expected)
 
 
 # ---------------------------------------------------------------------------
-# Written by RG (Robert Gipson). Template created by Claude (Opus 5).
+# Written by RG (Robert Gipson). Template created by Claude (Opus 5), which also
+# made these adjustments: corrected the stale test_dft.py/DFT comments, switched the
+# fixture to a bare info_csv name (exercising path resolution), asserted the parsed
+# column names alongside the shape, moved the fit assertions onto the named `details`
+# columns, and added the negative-feature, bounded-fit, add_eps, and anchored
+# header-key tests.
 # ---------------------------------------------------------------------------

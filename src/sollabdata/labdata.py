@@ -483,11 +483,6 @@ class LabData:
         return self.info_df
 
 
-#: Backwards-compatible alias for the old, non-PEP-8 class name. Safe to delete
-#: once no notebooks reference `Lab_Data`.
-Lab_Data = LabData
-
-
 # ---------------------------------------------------------------------------
 # Code written by RG (Robert Gipson).
 # Claude (Opus 5) made the following additions/adjustments in this pass:
@@ -511,5 +506,5 @@ Lab_Data = LabData
 #   - prep_plt / prep_animation_plt rewritten as dedented template strings, and
 #     `print()` / `__repr__` filled in with a short summary.
 #   - Added section comments and inline comments explaining the info_df data model.
-#   - Renamed the class Lab_Data -> LabData (PEP 8) and kept a `Lab_Data` alias.
+#   - Renamed the class Lab_Data -> LabData (PEP 8).
 # ---------------------------------------------------------------------------
