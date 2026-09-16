@@ -5,7 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sollabdata"
 version = "0.0.1"
+# authors credits everyone whose code is in the package; maintainers is who to contact
+# about it now.
 authors = [
+  { name="Robert Gipson", email="rrgipson@stanford.edu" },
+  { name="Eleanor Dunietz" },
+]
+maintainers = [
   { name="Robert Gipson", email="rrgipson@stanford.edu" },
 ]
 description = "A package for interacting with data from Solomon Lab Instruments"
@@ -24,15 +30,19 @@ dependencies = [
     "plotly>=5.0",
     "tabulate>=0.8.9",  # required by info_df.to_markdown(), used in LabData.to_md
     "scipy>=1.7",       # least_squares/quad for the AbsCD and MCD fitting routines
-    # The DFT class needs RG's cclib fork (extra frozen-coordinate bond/angle/dihedral
-    # parsing for ORCA and Gaussian), not the PyPI release. Install it separately with
-    #   pip install -e /home/robby/retry_cclib/my_cclib
-    # and keep it out of `dependencies` so pip cannot silently pull upstream over it.
+    "cclib>=1.7",       # unit conversion (convertor) in the DFT class
+    # NOTE: sollabdata only reads cclib-generated json, and only needs `convertor` from
+    # the standard release. Generating that json from raw ORCA/Gaussian output is a
+    # separate upstream step -- if it must parse frozen-coordinate bond/angle/dihedral
+    # blocks, do it with RG's cclib fork rather than this pinned release.
 ]
 
 [project.optional-dependencies]
-# Extras for working in notebooks: `pip install -e ".[notebook]"`
-notebook = ["jupyterlab", "ipython"]
+# Extras for working in notebooks: `pip install -e ".[notebook]"`.
+# Only IPython, which to_md() targets via IPython.display.Markdown. Jupyter itself is
+# deliberately not listed -- it is usually already installed (and better installed by
+# conda than pulled in by pip alongside a conda environment).
+notebook = ["ipython"]
 # Extras for running the test suite: `pip install -e ".[dev]"`
 dev = ["pytest>=7.0"]
 
