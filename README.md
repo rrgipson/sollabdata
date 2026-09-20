@@ -1,14 +1,14 @@
 # sollabdata
 
-Python tools for reading, processing, and plotting Solomon Lab instrument data — Abs/CD
-and MCD spectra from the J-1700, and DFT calculation output — with one consistent
-interface across instruments. This python package was adapted with permission from 
-code developed by Eleanor Dunietz (edx4900) and and Robert Gipson (rrgipson), 
-specifically from the analysis module of the electronic lab notebook setup found here: 
-https://github.com/edx4900/lab-notebook--jupyter.
+Python tools for reading, processing, and plotting Solomon Lab instrument data — currently 
+Abs/CD and MCD spectra from the J-1700, and DFT calculation output — with one consistent
+interface across instruments. This python package was adapted with permission by Robert Gipson 
+(with the assistance of Claude Code Opus 5) from code developed by Eleanor Dunietz (edx4900) 
+and Robert Gipson (rrgipson), specifically from the analysis module of the 
+electronic lab notebook setup found here: https://github.com/edx4900/lab-notebook--jupyter.
 
 
-> **Status:** personal/lab project, pre-1.0. The API is still moving and method
+> **Status:** personal/lab project, pre-1.0. The API is still under development and method
 > signatures may change without notice. Not on PyPI; install from a clone.
 
 ## Install
