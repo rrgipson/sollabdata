@@ -23,6 +23,9 @@ DATA_DIR = Path(__file__).parent / "data" / "abscd"
 # header line and the y labels from YUNITS/Y2UNITS/Y3UNITS/Y4UNITS.
 EXPECTED_COLUMNS = ["NANOMETERS", "CD/DC [mdeg]", "DC [V]", "HT [V]", "ABSORBANCE"]
 
+# The CD channel name, used by most of the fitting tests below.
+CD_COL = "CD/DC [mdeg]"
+
 
 @pytest.fixture
 def abscd_spectra():
@@ -229,6 +232,135 @@ def test_add_eps_scales_by_concentration(abscd_spectra):
         data = abscd_spectra.info_df.at[idx, "data"]
         at_peak = data.loc[data["NANOMETERS"] == peak_nm]
         assert float(at_peak["eps"].iloc[0]) == pytest.approx(expected)
+
+
+def test_fit_gaussians_multiple_ids_share_bands(abscd_spectra):
+    """Two spectra fit at once share energies and FWHMs but keep separate intensities.
+
+    The fixtures hold bands in different places -- Positive is +1 mdeg at 600 nm
+    (100 nm FWHM), Negative is -1 mdeg at 800 nm (200 nm FWHM). Fitting both against
+    the same two-band model should recover both band positions, with each trace's
+    intensities selecting only its own band. That is the whole point of a shared fit:
+    one set of band parameters, per-spectrum amplitudes.
+    """
+    _results, details, _fit = abscd_spectra.fit_gaussians(
+        energies=[610, 790],
+        fwhm=[110, 190],
+        # num_gauss per trace, id-major: Positive's two bands, then Negative's two
+        intens=[0.9, 0.1, 0.1, -0.9],
+        id=["Positive", "Negative"],
+        x_col="NANOMETERS",
+        y_cols=CD_COL,
+    )
+
+    # shared parameters
+    assert details["Energy"].tolist() == pytest.approx([600, 800], abs=0.5)
+    assert details["FWHM"].tolist() == pytest.approx([100, 200], abs=0.5)
+    # Inten_y0 is Positive/CD, Inten_y1 is Negative/CD
+    assert details["Inten_y0"].tolist() == pytest.approx([1, 0], abs=1e-3)
+    assert details["Inten_y1"].tolist() == pytest.approx([0, -1], abs=1e-3)
+
+
+def test_fit_gaussians_multiple_ids_store_per_id_slices(abscd_spectra):
+    """Each id gets a self-contained fit slice, so check_plot(id) still works.
+
+    A multi-id fit has one intensity block per trace, but the slice stored on a given
+    row holds only the shared energies/widths plus that id's own block -- the same
+    layout a single-id fit produces.
+    """
+    abscd_spectra.fit_gaussians(
+        energies=[610, 790], fwhm=[110, 190], intens=[0.9, 0.1, 0.1, -0.9],
+        id=["Positive", "Negative"], x_col="NANOMETERS", y_cols=CD_COL,
+    )
+
+    for one_id, expected_inten in [("Positive", 1.0), ("Negative", -1.0)]:
+        idx = abscd_spectra.info_df.index[abscd_spectra.info_df["id"] == one_id][0]
+        stored = abscd_spectra.info_df.at[idx, "fit"]
+        # 2 bands x (2 shared blocks + 1 y column) = 6, not the full 8 of the fit
+        assert len(stored) == 6
+        assert stored[:2] == pytest.approx([600, 800], abs=0.5)
+
+    # and check_plot can still infer num_gauss from one id's slice
+    fig = abscd_spectra.check_plot("Negative", x_col="NANOMETERS", y_cols=CD_COL)
+    assert len(fig.data) == 4  # data + total fit + 2 component gaussians
+
+
+def test_fit_gaussians_crosses_ids_with_y_cols(abscd_spectra):
+    """ids and y_cols multiply: 2 ids x 2 y columns is 4 traces, ordered id-major."""
+    _results, details, _fit = abscd_spectra.fit_gaussians(
+        energies=[610, 790], fwhm=[110, 190],
+        # Positive/CD, Positive/Abs, Negative/CD, Negative/Abs
+        intens=[0.9, 0.1, 0.9, 0.1, 0.1, -0.9, 0.1, 0.9],
+        id=["Positive", "Negative"], x_col="NANOMETERS", y_cols=[CD_COL, "ABSORBANCE"],
+    )
+
+    assert [c for c in details.columns if c.startswith("Inten")] == [
+        "Inten_y0", "Inten_y1", "Inten_y2", "Inten_y3"
+    ]
+    # Negative's absorbance is positive (+1) even though its CD is negative (-1)
+    assert details["Inten_y2"].tolist() == pytest.approx([0, -1], abs=1e-3)
+    assert details["Inten_y3"].tolist() == pytest.approx([0, 1], abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_message"),
+    [
+        pytest.param(dict(intens=[0.9, 0.1]), "intens must hold num_gauss per trace",
+                     id="intens_too_short"),
+        pytest.param(dict(low_bds=[0, 0, 0], up_bds=[1, 1, 1]),
+                     "must cover energies, widths and every trace", id="bounds_wrong_length"),
+        pytest.param(dict(scalar=[1.0]), "scalar must hold one value per trace",
+                     id="scalar_wrong_length"),
+        pytest.param(dict(id=["Positive", "Nope"]), "No info_df row with id",
+                     id="unknown_id"),
+        pytest.param(dict(fwhm=[110]), "energies and fwhm must be the same length",
+                     id="fwhm_length_mismatch"),
+    ],
+)
+def test_fit_gaussians_rejects_inconsistent_inputs(abscd_spectra, kwargs, expected_message):
+    """Wrong-length inputs raise a message naming the expected size.
+
+    Without these checks a mis-sized `intens` either silently mis-slices the
+    parameter vector or surfaces as an opaque error from deep inside scipy.
+    """
+    call = dict(
+        energies=[610, 790], fwhm=[110, 190], intens=[0.9, 0.1, 0.1, -0.9],
+        id=["Positive", "Negative"], x_col="NANOMETERS", y_cols=CD_COL,
+    )
+    call.update(kwargs)
+    with pytest.raises(ValueError, match=expected_message):
+        abscd_spectra.fit_gaussians(**call)
+
+
+def test_fit_gaussians_requires_a_common_x_grid(tmp_path):
+    """same_x=True refuses spectra on different x grids; same_x=False allows them."""
+    import numpy as np
+
+    def write(name, lo, hi):
+        xs = np.arange(hi, lo - 1, -1.0)
+        body = "".join(f"{x},{np.exp(-0.5 * ((x - 600) / 50) ** 2)}\n" for x in xs)
+        (tmp_path / name).write_text(
+            f"XUNITS,NANOMETERS\nYUNITS,{CD_COL}\nNPOINTS,{len(xs)}\nXYDATA\n" + body
+        )
+
+    write("wide.csv", 300, 900)
+    write("narrow.csv", 400, 800)
+    (tmp_path / "key.csv").write_text("id,File\nwide,wide.csv\nnarrow,narrow.csv\n")
+
+    spectra = AbsCD(path_to_raw_data=str(tmp_path), info_csv="key.csv")
+    shared = dict(energies=[610], fwhm=[60], intens=[1.0, 1.0],
+                  id=["wide", "narrow"], x_col="NANOMETERS", y_cols=CD_COL)
+
+    with pytest.raises(ValueError, match="not on the same NANOMETERS grid"):
+        spectra.fit_gaussians(**shared)
+
+    # with the guard lifted, each trace is integrated and fit against its own grid
+    _results, details, _fit = AbsCD(
+        path_to_raw_data=str(tmp_path), info_csv="key.csv"
+    ).fit_gaussians(**shared, same_x=False)
+    assert details.at[0, "Energy"] == pytest.approx(600, abs=0.5)
+    # sigma=50 -> FWHM = 50 * 2*sqrt(2*ln2)
+    assert details.at[0, "FWHM"] == pytest.approx(117.74, abs=0.5)
 
 
 # ---------------------------------------------------------------------------

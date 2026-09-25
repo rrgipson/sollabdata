@@ -211,7 +211,7 @@ folder immediately; `info_csv` may be a bare file name in that folder or a full 
 | `fix_changeover(ys, x_change)` | correct the detector-changeover discontinuity |
 | `add_wavenums()` / `add_eV()` | derived x axes from nanometers |
 | `add_eps(conc)` / `add_deps(conc)` | Beer–Lambert ε and Δε |
-| `fit_gaussians(...)` | fit Gaussian bands to one or more y columns simultaneously |
+| `fit_gaussians(...)` | fit Gaussian bands across any number of spectra and y columns at once, sharing band energies and widths while each trace keeps its own intensities |
 | `check_plot(id)` | overlay a fit on the data |
 
 ### MCD — adds field and temperature

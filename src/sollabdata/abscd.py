@@ -406,8 +406,42 @@ class AbsCD(LabData):
         xtol=1e-13,
         scalar=None,
     ):
-        """A function to fit Abs/CD data to gaussian bands.
-        y_cols defaults to a tuple rather than a list so the default cannot be mutated by a caller.
+        """Fit Gaussian bands to one or more spectra at once.
+
+        Every trace in the fit shares one set of band energies and FWHMs, and each
+        trace gets its own intensity for each band. A "trace" is one (id, y_col)
+        pair, so `id` and `y_cols` each take a single name or a sequence and the two
+        combine: 3 ids x 2 y columns is 6 traces sharing num_gauss energies/widths.
+
+        Traces are ordered id-major -- all of the first id's y columns, then all of
+        the second id's, and so on. That ordering fixes the layout of `intens`,
+        `low_bds`, `up_bds`, `scalar`, and the `Inten_y*` columns of `details`. With
+        id=("A", "B") and y_cols=("eps", "deps") the traces are, in order:
+        A/eps, A/deps, B/eps, B/deps.
+
+        Args:
+            energies: initial band centers in x_col units; its length sets num_gauss.
+            fwhm: initial band widths, one per band.
+            intens: initial intensities, num_gauss per trace laid out trace by trace
+                (num_gauss * n_traces values in total).
+            id: one id, or a sequence of ids, from info_df["id"].
+            x_col: column to fit against.
+            y_cols: one y column name, or a sequence of them.
+            xrange: [min, max] window to restrict the fit to.
+            low_bds, up_bds: bounds laid out like the parameters themselves --
+                energies, then widths, then the per-trace intensity blocks, i.e.
+                (2 + n_traces) * num_gauss values. The initial guess must lie inside
+                them or least_squares refuses to start.
+            same_x: require every trace to share an identical x grid, raising if they
+                do not. Pass False to fit spectra recorded on different grids.
+            scalar: optional per-trace divisor applied to the normalization area.
+            gtol, ftol, xtol: forwarded to least_squares.
+
+        Returns:
+            (results, details, fit) -- the raw parameter array, a per-band DataFrame,
+            and the scipy OptimizeResult. Each participating id additionally gets its
+            own self-contained slice of the result stored in info_df["fit"], laid out
+            exactly like a single-id fit, so check_plot(id) keeps working per spectrum.
         """
         # make sure all guess inputs are floats
         energies = [float(e) for e in energies]
@@ -416,30 +450,74 @@ class AbsCD(LabData):
         intens = [float(ints) for ints in intens]
 
         num_gauss = len(energies)
-        # get x and y data
-        idx = self.info_df.index[self.info_df["id"] == id].to_numpy()[0]
-        sample_row = self.info_df.loc[self.info_df["id"] == id].copy()
-        sample_row = sample_row.reset_index()
-        if xrange is not None:
-            row_data = sample_row.at[0, "data"].loc[
-                (sample_row.at[0, "data"][x_col] > xrange[0])
-                & (sample_row.at[0, "data"][x_col] < xrange[1])
-            ]
-        else:
-            row_data = sample_row.at[0, "data"]
-        xs = row_data[x_col].to_numpy()
-        # a bare string means one y column; any other sequence means several
+        if len(widths) != num_gauss:
+            raise ValueError(
+                f"energies and fwhm must be the same length, got {num_gauss} and {len(widths)}."
+            )
+
+        # a bare string means one id / one y column; any other sequence means several
         # (checking `is not list` here would mis-handle a tuple or an Index)
-        ys = (
-            [row_data[y_cols].to_numpy()]
-            if isinstance(y_cols, str)
-            else row_data[list(y_cols)].T.to_numpy()
-        )
+        ids = [id] if isinstance(id, str) else list(id)
+        y_col_list = [y_cols] if isinstance(y_cols, str) else list(y_cols)
+
+        # build one trace per (id, y_col), id-major. Each id contributes its own x
+        # grid, so spectra on different grids can be fit together with same_x=False.
+        idxs = []
+        labels = []
+        xs = []
+        ys = []
+        for one_id in ids:
+            matches = self.info_df.index[self.info_df["id"] == one_id].to_numpy()
+            if len(matches) == 0:
+                raise ValueError(f"No info_df row with id {one_id!r}.")
+            idx = matches[0]
+            idxs.append(idx)
+            row_data = self.info_df.at[idx, "data"]
+            if xrange is not None:
+                row_data = row_data.loc[
+                    (row_data[x_col] > xrange[0]) & (row_data[x_col] < xrange[1])
+                ]
+            x = row_data[x_col].to_numpy()
+            for y_col in y_col_list:
+                labels.append(f"{one_id}/{y_col}")
+                xs.append(x)
+                ys.append(row_data[y_col].to_numpy())
+
+        n_traces = len(ys)
+
+        # Guard against silently fitting spectra that are not on a common x grid.
+        if same_x and n_traces > 1:
+            for k in range(1, n_traces):
+                if xs[k].shape != xs[0].shape or not np.allclose(xs[k], xs[0]):
+                    raise ValueError(
+                        f"{labels[k]} is not on the same {x_col} grid as {labels[0]}. "
+                        "Pass same_x=False to fit spectra recorded on different grids."
+                    )
+
+        # Check the caller-supplied lengths up front: getting these wrong otherwise
+        # surfaces as a confusing scipy error or a silently mis-sliced fit.
+        if len(intens) != n_traces * num_gauss:
+            raise ValueError(
+                f"intens must hold num_gauss per trace: expected "
+                f"{n_traces * num_gauss} values ({n_traces} traces x {num_gauss} bands), "
+                f"got {len(intens)}. Traces are {labels}."
+            )
+        n_params = (2 + n_traces) * num_gauss
+        for name, bds in (("low_bds", low_bds), ("up_bds", up_bds)):
+            if bds is not None and len(bds) != n_params:
+                raise ValueError(
+                    f"{name} must cover energies, widths and every trace's "
+                    f"intensities: expected {n_params} values, got {len(bds)}."
+                )
+        if scalar is not None and len(scalar) != n_traces:
+            raise ValueError(
+                f"scalar must hold one value per trace: expected {n_traces}, got {len(scalar)}."
+            )
 
         # normalize ys, intensities, and bounds
         # float dtype: an int array would truncate each area and normalize by the wrong value
         # (and divide by zero for any area below 1)
-        areas = np.zeros(len(ys), dtype=float)
+        areas = np.zeros(n_traces, dtype=float)
         nys = []
         nintens = np.array(intens)
         # handle bounds setup
@@ -453,49 +531,35 @@ class AbsCD(LabData):
             nu_bds = np.array(up_bds)
         else:
             nu_bds = np.inf
-        # iterate through ys, calc and store areas, and normalize
-        for k in range(len(ys)):
+        # iterate through traces, calc and store areas, and normalize
+        for k in range(n_traces):
             # abs() on the integral, not just on ys: the J-1700 writes x descending
             # (DELTAX,-1), so the integral comes back negative. The sign cancels out
             # for the data and intensities, but dividing low_bds/up_bds by a negative
             # area swaps them, and least_squares then rejects the bounds outright.
             # The area is only ever used as a magnitude scale factor.
-            areas[k] = abs(_trapezoid(abs(ys[k]), x=xs if same_x else xs[k]))
+            areas[k] = abs(_trapezoid(abs(ys[k]), x=xs[k]))
             if scalar is not None:
                 areas[k] = areas[k] / scalar[k]
             nys.append(np.divide(ys[k], areas[k]))
-            nintens[k * num_gauss : k * num_gauss + num_gauss] = np.divide(
-                intens[k * num_gauss : k * num_gauss + num_gauss], areas[k]
+            # trace k's intensity block sits at (2 + k) * num_gauss, after the shared
+            # energies and widths
+            lo, hi = (2 + k) * num_gauss, (3 + k) * num_gauss
+            nintens[k * num_gauss : (k + 1) * num_gauss] = np.divide(
+                intens[k * num_gauss : (k + 1) * num_gauss], areas[k]
             )
 
-            # normalize bounds
+            # normalize bounds (only the intensity block scales with the area)
             if low_bds is not None:
-                nl_bds[
-                    k * num_gauss + (2 * num_gauss) : k * num_gauss + (3 * num_gauss)
-                ] = np.divide(
-                    low_bds[
-                        (2 * num_gauss)
-                        + k * num_gauss : k * num_gauss
-                        + (3 * num_gauss)
-                    ],
-                    areas[k],
-                )
+                nl_bds[lo:hi] = np.divide(low_bds[lo:hi], areas[k])
             if up_bds is not None:
-                nu_bds[
-                    k * num_gauss + (2 * num_gauss) : k * num_gauss + (3 * num_gauss)
-                ] = np.divide(
-                    up_bds[
-                        (2 * num_gauss)
-                        + k * num_gauss : k * num_gauss
-                        + (3 * num_gauss)
-                    ],
-                    areas[k],
-                )
+                nu_bds[lo:hi] = np.divide(up_bds[lo:hi], areas[k])
 
         # prepare input lists
         params = np.concatenate((energies, widths, nintens))
         bounds = (nl_bds, nu_bds)
-        # run fit
+        # run fit. xs is a list of per-trace x arrays the same length as nys, so
+        # resid() pairs each trace with its own x.
         fit = least_squares(
             self.resid,
             params,
@@ -512,25 +576,20 @@ class AbsCD(LabData):
         nresults = fit["x"]
 
         results = np.array(nresults)
-        for ai in range(len(areas)):
-            results[
-                ai * num_gauss + (2 * num_gauss) : ai * num_gauss + (3 * num_gauss)
-            ] = np.multiply(
-                nresults[
-                    ai * num_gauss + (2 * num_gauss) : ai * num_gauss + (3 * num_gauss)
-                ],
-                areas[ai],
-            )
+        for ai in range(n_traces):
+            lo, hi = (2 + ai) * num_gauss, (3 + ai) * num_gauss
+            results[lo:hi] = np.multiply(nresults[lo:hi], areas[ai])
 
         details = pd.DataFrame()
         details["Energy"] = results[0:num_gauss]
         details["FWHM"] = results[num_gauss : 2 * num_gauss]
-        for i in range(len(ys)):
+        for i in range(n_traces):
             ylab = "Inten_y" + str(i)
             details[ylab] = results[(i + 2) * num_gauss : (i + 3) * num_gauss]
         # add Abs max value
         # details['y0_max'] = np.multiply([gauss(0,0,w) for w in details['FWHM']],details['Inten_y0'])
-        # Calc fwhm and oscillator strengths (f)
+        # Calc fwhm and oscillator strengths (f). This uses the FIRST trace, so it is
+        # only an oscillator strength if that trace is the absorption channel.
         fs = 4.61e-9 * details["FWHM"] * details["Inten_y0"]
         # details['fwhm'] = fwhms
         details["f"] = fs
@@ -539,9 +598,25 @@ class AbsCD(LabData):
         if "fit" not in self.info_df.columns:
             self.info_df["fit"] = None
             self.info_df["fit"] = self.info_df["fit"].astype("object")
-        print(f"Fit params stored in info_df.at[{idx}, 'fit']")
+        # Give each id a self-contained slice -- the shared energies and widths plus
+        # only its own intensity blocks -- so it reads back exactly like a single-id
+        # fit and check_plot(one_id) can still infer num_gauss from its length.
+        n_y = len(y_col_list)
+        for pos, (one_id, idx) in enumerate(zip(ids, idxs)):
+            blocks = [results[0:num_gauss], results[num_gauss : 2 * num_gauss]]
+            for t in range(n_y):
+                j = pos * n_y + t
+                blocks.append(results[(2 + j) * num_gauss : (3 + j) * num_gauss])
+            self.info_df.at[idx, "fit"] = np.concatenate(blocks)
+            print(f"Fit params stored in info_df.at[{idx}, 'fit']  ({one_id})")
+        # Name the traces, since Inten_y* is positional and easy to misread once
+        # more than one spectrum is in the fit.
+        if n_traces > 1:
+            print(
+                "Traces: "
+                + ", ".join(f"Inten_y{i} = {lab}" for i, lab in enumerate(labels))
+            )
         print(details.to_markdown())
-        self.info_df.at[idx, "fit"] = results
 
         return results, details, fit
 
@@ -671,6 +746,13 @@ class AbsCD(LabData):
 #     quick_plot a flat px.line figure raised "(row, col) pair sent is out of
 #     range" whenever more than one y column was fitted.
 #   - fix_changeover() returns instead of falling through to a success message.
+#   - fit_gaussians() accepts multiple ids as well as multiple y columns, fitting
+#     one trace per (id, y_col) pair against shared band energies and widths with
+#     per-trace intensities. Traces are id-major; each trace is integrated and fit
+#     against its own x grid; same_x=True now validates that those grids match
+#     rather than silently reusing the first one; the caller's intens/bounds/scalar
+#     lengths are checked up front; and each participating id is given a
+#     self-contained result slice so check_plot(id) keeps working per spectrum.
 #   - Channel labels are matched with anchored X_UNITS_RE / Y_UNITS_RE patterns
 #     (XUNITS, YUNITS, Y2UNITS, ...) rather than `"UNITS" in line and "X" in line`,
 #     which misread a y channel whose unit contained an "X" (e.g. FLUX) as the x
