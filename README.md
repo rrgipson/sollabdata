@@ -211,7 +211,7 @@ folder immediately; `info_csv` may be a bare file name in that folder or a full 
 | `fix_changeover(ys, x_change)` | correct the detector-changeover discontinuity |
 | `add_wavenums()` / `add_eV()` | derived x axes from nanometers |
 | `add_eps(conc)` / `add_deps(conc)` | Beer–Lambert ε and Δε |
-| `fit_gaussians(...)` | fit Gaussian bands across any number of spectra and y columns at once, sharing band energies and widths while each trace keeps its own intensities |
+| `fit_gaussians(...)` | fit Gaussian bands across any number of spectra and y columns at once, sharing band energies and widths while each trace keeps its own intensities; pass `fwhm` as a float to tie every band to one shared width |
 | `check_plot(id)` | overlay a fit on the data |
 
 ### MCD — adds field and temperature
@@ -316,6 +316,14 @@ Things that will bite you, roughly in order of likelihood:
   `freq_idx`) explicitly for anything thermochemical.
 - **`fit_gaussians` requires the initial guess to be inside any bounds you supply**,
   otherwise scipy raises `Initial guess is outside of provided bounds`.
+- **`fit_gaussians` orders its traces id-major** — every y column of the first id,
+  then every y column of the second. That ordering is what `intens`, `low_bds`,
+  `up_bds`, `scalar`, and the `Inten_y*` columns are indexed by. The function prints
+  the trace list whenever more than one is being fit.
+- **A float `fwhm` changes the expected bounds length.** A shared width is a single
+  parameter, so `low_bds`/`up_bds` take one width bound rather than `num_gauss` of
+  them. The returned `results` still reports the width once per band; only `fit.x`
+  reflects the compact parameterization.
 - **`VTVH_MCD.average_replicates` needs `Date` and `Num_Temp_Checks` columns** in the
   info csv, which are not documented anywhere else.
 

@@ -10,6 +10,7 @@ that keys them.
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from sollabdata import AbsCD
@@ -334,8 +335,6 @@ def test_fit_gaussians_rejects_inconsistent_inputs(abscd_spectra, kwargs, expect
 
 def test_fit_gaussians_requires_a_common_x_grid(tmp_path):
     """same_x=True refuses spectra on different x grids; same_x=False allows them."""
-    import numpy as np
-
     def write(name, lo, hi):
         xs = np.arange(hi, lo - 1, -1.0)
         body = "".join(f"{x},{np.exp(-0.5 * ((x - 600) / 50) ** 2)}\n" for x in xs)
@@ -361,6 +360,177 @@ def test_fit_gaussians_requires_a_common_x_grid(tmp_path):
     assert details.at[0, "Energy"] == pytest.approx(600, abs=0.5)
     # sigma=50 -> FWHM = 50 * 2*sqrt(2*ln2)
     assert details.at[0, "FWHM"] == pytest.approx(117.74, abs=0.5)
+
+
+def _gauss(x, center, fwhm):
+    """Standalone Gaussian, so the synthetic fixture below does not lean on the code under test."""
+    sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+    return np.exp(-0.5 * (x - center) ** 2 / sigma**2)
+
+
+#: Parameters of the two_equal_widths fixture: two bands that genuinely share a width.
+EQUAL_WIDTH = 80.0
+EQUAL_CENTERS = (500.0, 700.0)
+EQUAL_INTENS = (1.0, 0.6)
+
+
+@pytest.fixture
+def two_equal_widths(tmp_path):
+    """A synthetic scan with two bands of identical width, plus a half-scale copy.
+
+    The committed fixtures deliberately have *different* widths (100 and 200 nm), so a
+    shared-width fit across them would compromise between the two rather than recover
+    either. Testing that a tied width is recovered needs data where the widths really
+    are equal, which is what this builds.
+    """
+    xs = np.arange(900, 299, -1.0)
+    y = sum(
+        inten * _gauss(xs, center, EQUAL_WIDTH)
+        for center, inten in zip(EQUAL_CENTERS, EQUAL_INTENS)
+    )
+
+    def write(name, scale):
+        body = "".join(f"{x},{scale * v}\n" for x, v in zip(xs, y))
+        (tmp_path / name).write_text(
+            f"XUNITS,NANOMETERS\nYUNITS,{CD_COL}\nNPOINTS,{len(xs)}\nXYDATA\n" + body
+        )
+
+    write("full.csv", 1.0)
+    write("half.csv", 0.5)
+    (tmp_path / "key.csv").write_text("id,File\nfull,full.csv\nhalf,half.csv\n")
+    return AbsCD(path_to_raw_data=str(tmp_path), info_csv="key.csv")
+
+
+def test_fit_gaussians_scalar_fwhm_ties_widths(two_equal_widths):
+    """A float fwhm fits ONE width parameter shared by every band.
+
+    The give-away is the length of the raw optimizer vector: 2*num_gauss + 1 for a
+    shared width against 3*num_gauss for independent ones. Checking only that the
+    two fitted widths came out equal would not distinguish "tied" from "happened to
+    agree", since this data's widths genuinely are equal.
+    """
+    _results, details, fit = two_equal_widths.fit_gaussians(
+        energies=[510, 690],
+        fwhm=75.0,  # a float, not a list -> one shared width
+        intens=[0.9, 0.5],
+        id="full",
+        x_col="NANOMETERS",
+        y_cols=CD_COL,
+    )
+
+    # one width parameter, not two: 2 centers + 1 width + 2 intensities
+    assert len(fit.x) == 5
+
+    assert details["Energy"].tolist() == pytest.approx(list(EQUAL_CENTERS), abs=0.1)
+    assert details["Inten_y0"].tolist() == pytest.approx(list(EQUAL_INTENS), abs=1e-3)
+    # the shared width is reported once per band, identically
+    assert details["FWHM"].nunique() == 1
+    assert details["FWHM"].tolist() == pytest.approx([EQUAL_WIDTH] * 2, abs=0.1)
+
+
+def test_fit_gaussians_independent_fwhm_keeps_one_width_per_band(two_equal_widths):
+    """Passing a list keeps the old behaviour: num_gauss free width parameters."""
+    _results, details, fit = two_equal_widths.fit_gaussians(
+        energies=[510, 690],
+        fwhm=[75.0, 75.0],  # a list -> two independent widths
+        intens=[0.9, 0.5],
+        id="full",
+        x_col="NANOMETERS",
+        y_cols=CD_COL,
+    )
+    # 2 centers + 2 widths + 2 intensities
+    assert len(fit.x) == 6
+    # same answer as the tied fit, because this data's widths really are equal
+    assert details["FWHM"].tolist() == pytest.approx([EQUAL_WIDTH] * 2, abs=0.1)
+
+
+def test_fit_gaussians_shared_fwhm_returns_expanded_results(two_equal_widths):
+    """`results` and the stored slice always carry one width per band.
+
+    The tying is an optimization detail: `fit.x` is compact, but everything the rest
+    of the package consumes sees the same layout whether or not the widths were tied.
+    That is what lets check_plot keep inferring num_gauss from a vector length.
+    """
+    results, _details, fit = two_equal_widths.fit_gaussians(
+        energies=[510, 690], fwhm=75.0, intens=[0.9, 0.5],
+        id="full", x_col="NANOMETERS", y_cols=CD_COL,
+    )
+
+    assert len(fit.x) == 5  # compact
+    assert len(results) == 6  # expanded: 2 centers + 2 widths + 2 intensities
+    # the duplicated width block sits between the centers and the intensities
+    assert results[2] == pytest.approx(results[3])
+
+    idx = two_equal_widths.info_df.index[two_equal_widths.info_df["id"] == "full"][0]
+    assert len(two_equal_widths.info_df.at[idx, "fit"]) == 6
+
+    # and check_plot reads that slice back correctly
+    fig = two_equal_widths.check_plot("full", x_col="NANOMETERS", y_cols=CD_COL)
+    assert len(fig.data) == 4  # data + total fit + 2 component gaussians
+
+
+def test_fit_gaussians_shared_fwhm_across_ids(two_equal_widths):
+    """A shared width composes with a multi-id fit: one width for every trace."""
+    _results, details, fit = two_equal_widths.fit_gaussians(
+        energies=[510, 690],
+        fwhm=75.0,
+        intens=[0.9, 0.5, 0.45, 0.25],  # full's two bands, then half's
+        id=["full", "half"],
+        x_col="NANOMETERS",
+        y_cols=CD_COL,
+    )
+    # 2 centers + 1 shared width + 2 traces x 2 intensities
+    assert len(fit.x) == 7
+    assert details["FWHM"].tolist() == pytest.approx([EQUAL_WIDTH] * 2, abs=0.1)
+    assert details["Inten_y0"].tolist() == pytest.approx([1.0, 0.6], abs=1e-3)
+    assert details["Inten_y1"].tolist() == pytest.approx([0.5, 0.3], abs=1e-3)
+
+
+def test_fit_gaussians_shared_fwhm_takes_one_width_bound(two_equal_widths):
+    """With a tied width there is one width parameter, so one width bound."""
+    shared = dict(
+        energies=[510, 690], fwhm=75.0, intens=[0.9, 0.5],
+        id="full", x_col="NANOMETERS", y_cols=CD_COL,
+    )
+    # 2 energies + 1 width + 2 intensities = 5
+    _results, details, _fit = two_equal_widths.fit_gaussians(
+        **shared, low_bds=[400, 600, 50, 0.1, 0.1], up_bds=[600, 800, 120, 2.0, 2.0]
+    )
+    assert details.at[0, "FWHM"] == pytest.approx(EQUAL_WIDTH, abs=0.1)
+
+    # passing num_gauss width bounds instead is the easy mistake, so it is named
+    with pytest.raises(ValueError, match="one shared width.*expected 5 values"):
+        two_equal_widths.fit_gaussians(**shared, low_bds=[0] * 6, up_bds=[1] * 6)
+
+
+def test_fit_gaussians_scalar_fwhm_with_one_band(abscd_spectra):
+    """The single-band case is degenerate -- tied and independent coincide -- but must work."""
+    _results, details, fit = abscd_spectra.fit_gaussians(
+        energies=[700], fwhm=150.0, intens=[1.5],
+        id="Positive", x_col="NANOMETERS", y_cols=CD_COL,
+    )
+    assert len(fit.x) == 3  # 1 center + 1 width + 1 intensity, either way
+    assert details.at[0, "Energy"] == pytest.approx(600, abs=0.1)
+    assert details.at[0, "FWHM"] == pytest.approx(100, abs=0.1)
+    assert details.at[0, "Inten_y0"] == pytest.approx(1, abs=0.1)
+
+
+def test_unpack_fitvars_needs_num_gauss_when_shared():
+    """The two layouts are ambiguous by length, so a shared vector must state its band count.
+
+    With one trace, 9 parameters is either 3 independent-width bands (3N) or 4
+    shared-width ones (2N+1) -- which is why fit_gaussians passes the mode through
+    to resid rather than letting it guess.
+    """
+    with pytest.raises(ValueError, match="num_gauss is required"):
+        AbsCD._unpack_fitvars([1, 2, 3], n_traces=1, shared_fwhm=True)
+
+    # given the band count, both layouts unpack to one width per band
+    _c, widths, intens = AbsCD._unpack_fitvars(
+        [500, 700, 80, 1.0, 0.6], n_traces=1, num_gauss=2, shared_fwhm=True
+    )
+    assert widths.tolist() == [80, 80]
+    assert intens[0].tolist() == [1.0, 0.6]
 
 
 # ---------------------------------------------------------------------------

@@ -363,10 +363,56 @@ class AbsCD(LabData):
         width = fwhm / (2 * np.sqrt(2 * np.log(2)))
         return np.exp(-1 / 2 * (x - center) ** 2 / (width) ** 2)
 
-    def resid(self, fitvars, xs, ys):
-        """Residual Calculator for Fitting to Gaussians"""
-        # fit vars should be in format [energy1, energy2, ..., width1, w2, ..., scalarAbs1, sA2, ..., scalarCD1, sCD2, ...]
-        num_gauss = int(len(fitvars) / (len(ys) + 2))
+    @staticmethod
+    def _unpack_fitvars(fitvars, n_traces, num_gauss=None, shared_fwhm=False):
+        """Split a flat parameter vector into centers, per-band widths, and per-trace intensities.
+
+        Two layouts are possible::
+
+            independent widths: [E_1..E_N, W_1..W_N, I_1..I_N per trace]
+            shared width:       [E_1..E_N, W,        I_1..I_N per trace]
+
+        A shared width is broadcast to one value per band on the way out, so callers
+        never have to care which layout they were handed.
+
+        num_gauss is inferred from the vector length when it is not supplied, which
+        only works for the independent-width layout: the two are ambiguous by length
+        alone (with one trace, 9 parameters is either 3 independent-width bands or 4
+        shared-width ones), so a shared-width vector has to say how many bands it has.
+        """
+        fitvars = np.asarray(fitvars, dtype=float)
+        if num_gauss is None:
+            if shared_fwhm:
+                raise ValueError(
+                    "num_gauss is required when shared_fwhm is True; the vector length "
+                    "does not determine the number of bands on its own."
+                )
+            num_gauss = int(len(fitvars) / (n_traces + 2))
+        centers = fitvars[0:num_gauss]
+        if shared_fwhm:
+            widths = np.full(num_gauss, fitvars[num_gauss])
+            inten_offset = num_gauss + 1
+        else:
+            widths = fitvars[num_gauss : 2 * num_gauss]
+            inten_offset = 2 * num_gauss
+        intens = [
+            fitvars[inten_offset + j * num_gauss : inten_offset + (j + 1) * num_gauss]
+            for j in range(n_traces)
+        ]
+        return centers, widths, intens
+
+    def resid(self, fitvars, xs, ys, num_gauss=None, shared_fwhm=False):
+        """Residual Calculator for Fitting to Gaussians.
+
+        fitvars is [energy1, energy2, ..., width1, w2, ..., scalarAbs1, sA2, ...,
+        scalarCD1, sCD2, ...], with a single width entry in place of width1..widthN
+        when shared_fwhm is True. num_gauss and shared_fwhm come through
+        least_squares' `args`; their defaults reproduce the original behaviour of
+        inferring the band count from the vector length.
+        """
+        centers, widths, intens = self._unpack_fitvars(
+            fitvars, len(ys), num_gauss, shared_fwhm
+        )
 
         total_resid = np.array([])
         # for each y given, calculate gaussians, fit, and add to list of residuals
@@ -378,9 +424,8 @@ class AbsCD(LabData):
                 x = xs
             # get a list of the individual gaussian y values
             gauss_list = [
-                fitvars[i + ((2 + j) * num_gauss)]
-                * self.gauss(x, fitvars[i], fitvars[i + num_gauss])
-                for i in range(num_gauss)
+                intens[j][i] * self.gauss(x, centers[i], widths[i])
+                for i in range(len(centers))
             ]
             # calculate total for Abs with current params
             total_fit = np.sum(gauss_list, axis=0)
@@ -421,7 +466,8 @@ class AbsCD(LabData):
 
         Args:
             energies: initial band centers in x_col units; its length sets num_gauss.
-            fwhm: initial band widths, one per band.
+            fwhm: initial band widths, one per band -- or a single float, which ties
+                every band to one shared width fitted as a single parameter.
             intens: initial intensities, num_gauss per trace laid out trace by trace
                 (num_gauss * n_traces values in total).
             id: one id, or a sequence of ids, from info_df["id"].
@@ -430,8 +476,10 @@ class AbsCD(LabData):
             xrange: [min, max] window to restrict the fit to.
             low_bds, up_bds: bounds laid out like the parameters themselves --
                 energies, then widths, then the per-trace intensity blocks, i.e.
-                (2 + n_traces) * num_gauss values. The initial guess must lie inside
-                them or least_squares refuses to start.
+                (2 + n_traces) * num_gauss values. A shared (float) fwhm contributes
+                ONE width bound rather than num_gauss of them, so the expected length
+                becomes (1 + n_traces) * num_gauss + 1. The initial guess must lie
+                inside the bounds or least_squares refuses to start.
             same_x: require every trace to share an identical x grid, raising if they
                 do not. Pass False to fit spectra recorded on different grids.
             scalar: optional per-trace divisor applied to the normalization area.
@@ -442,18 +490,32 @@ class AbsCD(LabData):
             and the scipy OptimizeResult. Each participating id additionally gets its
             own self-contained slice of the result stored in info_df["fit"], laid out
             exactly like a single-id fit, so check_plot(id) keeps working per spectrum.
+
+            `results` always carries one width per band, even when the fit tied them,
+            so its layout does not depend on how the fit was parameterized. Only
+            `fit.x` -- the raw optimizer output -- holds the single shared width. Pass
+            `results`, not `fit.x`, if you ever hand a vector to check_plot(result=).
         """
         # make sure all guess inputs are floats
         energies = [float(e) for e in energies]
-        widths = [float(w) for w in fwhm]
+        # A scalar fwhm ties every band to one shared width, fitted as a single
+        # parameter. np.ndim rather than isinstance: it is 0 for floats, ints and
+        # numpy scalars but not for lists, tuples or 1-d arrays.
+        shared_fwhm = np.ndim(fwhm) == 0
+        widths = [float(fwhm)] if shared_fwhm else [float(w) for w in fwhm]
         # intens = np.concatenate((intens))
         intens = [float(ints) for ints in intens]
 
         num_gauss = len(energies)
-        if len(widths) != num_gauss:
+        if not shared_fwhm and len(widths) != num_gauss:
             raise ValueError(
-                f"energies and fwhm must be the same length, got {num_gauss} and {len(widths)}."
+                f"energies and fwhm must be the same length, got {num_gauss} and "
+                f"{len(widths)}. Pass fwhm as a single float to tie every band to one "
+                "shared width instead."
             )
+        # where the intensity blocks start: after the centers and the width block,
+        # which holds one entry when shared and num_gauss when not
+        inten_offset = num_gauss + len(widths)
 
         # a bare string means one id / one y column; any other sequence means several
         # (checking `is not list` here would mis-handle a tuple or an Index)
@@ -502,11 +564,12 @@ class AbsCD(LabData):
                 f"{n_traces * num_gauss} values ({n_traces} traces x {num_gauss} bands), "
                 f"got {len(intens)}. Traces are {labels}."
             )
-        n_params = (2 + n_traces) * num_gauss
+        n_params = inten_offset + n_traces * num_gauss
+        width_desc = "one shared width" if shared_fwhm else "widths"
         for name, bds in (("low_bds", low_bds), ("up_bds", up_bds)):
             if bds is not None and len(bds) != n_params:
                 raise ValueError(
-                    f"{name} must cover energies, widths and every trace's "
+                    f"{name} must cover energies, {width_desc} and every trace's "
                     f"intensities: expected {n_params} values, got {len(bds)}."
                 )
         if scalar is not None and len(scalar) != n_traces:
@@ -542,9 +605,9 @@ class AbsCD(LabData):
             if scalar is not None:
                 areas[k] = areas[k] / scalar[k]
             nys.append(np.divide(ys[k], areas[k]))
-            # trace k's intensity block sits at (2 + k) * num_gauss, after the shared
-            # energies and widths
-            lo, hi = (2 + k) * num_gauss, (3 + k) * num_gauss
+            # trace k's intensity block sits after the shared energies and widths
+            lo = inten_offset + k * num_gauss
+            hi = lo + num_gauss
             nintens[k * num_gauss : (k + 1) * num_gauss] = np.divide(
                 intens[k * num_gauss : (k + 1) * num_gauss], areas[k]
             )
@@ -564,7 +627,7 @@ class AbsCD(LabData):
             self.resid,
             params,
             bounds=bounds,
-            args=(xs, nys),
+            args=(xs, nys, num_gauss, shared_fwhm),
             verbose=1,
             gtol=gtol,
             ftol=ftol,
@@ -577,8 +640,21 @@ class AbsCD(LabData):
 
         results = np.array(nresults)
         for ai in range(n_traces):
-            lo, hi = (2 + ai) * num_gauss, (3 + ai) * num_gauss
+            lo = inten_offset + ai * num_gauss
+            hi = lo + num_gauss
             results[lo:hi] = np.multiply(nresults[lo:hi], areas[ai])
+        # Expand a shared width back to one value per band. Everything downstream --
+        # `results`, `details`, the per-id slices and check_plot -- then sees a single
+        # stable layout, and the tying stays an optimization detail rather than
+        # something every consumer has to know about.
+        if shared_fwhm:
+            results = np.concatenate(
+                (
+                    results[0:num_gauss],
+                    np.full(num_gauss, results[num_gauss]),
+                    results[inten_offset:],
+                )
+            )
 
         details = pd.DataFrame()
         details["Energy"] = results[0:num_gauss]
@@ -633,6 +709,8 @@ class AbsCD(LabData):
         """A way to plot the fits performed by fit_gaussians
         id specifies which one to use
         specify result if don't want to use the result automatically stored in row['fit']
+        -- that must be the expanded `results` array fit_gaussians returns, not the
+        compact fit.x, which holds only one entry for a shared (float) fwhm.
         **kwargs is passed through to quick_plot"""
         if result is None:
             idx = self.info_df.index[self.info_df["id"] == id].to_numpy()[0]
@@ -659,7 +737,10 @@ class AbsCD(LabData):
         )
 
         # fit vars should be in format [energy1, energy2, ..., width1, w2, ..., scalarAbs1, sA2, ..., scalarCD1, sCD2, ...]
-        num_gauss = int(len(fitvars) / (len(ys) + 2))
+        # fit_gaussians always stores and returns that expanded layout -- one width per
+        # band even when the fit tied them -- so num_gauss follows from the length here.
+        centers, widths, intens = self._unpack_fitvars(fitvars, len(ys))
+        num_gauss = len(centers)
 
         # create dataframe for the results
         fit = pd.DataFrame()
@@ -674,8 +755,7 @@ class AbsCD(LabData):
 
             # get a list of the individual gaussian y values
             gauss_list = [
-                fitvars[i + ((2 + j) * num_gauss)]
-                * self.gauss(x, fitvars[i], fitvars[i + num_gauss])
+                intens[j][i] * self.gauss(x, centers[i], widths[i])
                 for i in range(num_gauss)
             ]
             # calculate total for Abs with current params
@@ -753,6 +833,13 @@ class AbsCD(LabData):
 #     rather than silently reusing the first one; the caller's intens/bounds/scalar
 #     lengths are checked up front; and each participating id is given a
 #     self-contained result slice so check_plot(id) keeps working per spectrum.
+#   - fit_gaussians() also accepts a float fwhm, tying every band to one shared
+#     width fitted as a single parameter. The compact vector lives only inside
+#     least_squares: resid() takes num_gauss/shared_fwhm through its args, and the
+#     width is expanded back to one value per band before results/details/the
+#     stored slices are built, so check_plot needs no knowledge of the mode. The
+#     layout arithmetic that resid() and check_plot() duplicated now lives in one
+#     place, _unpack_fitvars().
 #   - Channel labels are matched with anchored X_UNITS_RE / Y_UNITS_RE patterns
 #     (XUNITS, YUNITS, Y2UNITS, ...) rather than `"UNITS" in line and "X" in line`,
 #     which misread a y channel whose unit contained an "X" (e.g. FLUX) as the x
