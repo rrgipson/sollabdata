@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import textwrap
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence, TypeVar
 
 import matplotlib.pyplot as plt  # noqa: F401  (kept for interactive/child-class use)
 import numpy as np  # noqa: F401  (kept for interactive/child-class use)
@@ -56,6 +56,10 @@ def _as_list(value: Any) -> list:
     return list(value)
 
 
+#: Lets copy() return the caller's own class (e.g. MCD) rather than LabData.
+_LabDataT = TypeVar("_LabDataT", bound="LabData")
+
+
 # ---------------------------------------------------------------------------
 # Parent Class
 # ---------------------------------------------------------------------------
@@ -98,16 +102,18 @@ class LabData:
                 loading options.
         """
         self.experiment_df: pd.DataFrame | None = experiment_df
-        self.info_df: pd.DataFrame | None = info_df
+        # Default to empty containers rather than None so type checkers (Pylance)
+        # don't flag every use of info_df / labels as possibly None.
+        self.info_df: pd.DataFrame = pd.DataFrame() if info_df is None else info_df
         self.processing_metadata = processing_metadata
-        self.labels = labels
+        self.labels: dict = {} if labels is None else labels
         if path_to_raw_data is not None:
             print(f"Parsing Data from {path_to_raw_data} and {info_csv}")
             self.process(path_to_raw_data, info_csv, **kwargs)
 
     # -- object management --------------------------------------------------
 
-    def copy(self) -> "LabData":
+    def copy(self: _LabDataT) -> _LabDataT:
         """Copy an instance of the data Class. Should work for child classes too.
 
         Deep-copies the nested per-measurement DataFrames in the ``data`` column,
@@ -117,11 +123,11 @@ class LabData:
             experiment_df=(
                 None if self.experiment_df is None else self.experiment_df.copy()
             ),
-            info_df=None if self.info_df is None else self.info_df.copy(),
+            info_df=self.info_df.copy(),
             processing_metadata=self.processing_metadata,
             labels=self.labels,
         )
-        if new.info_df is not None and "data" in new.info_df.columns:
+        if "data" in new.info_df.columns:
             for idx in new.info_df.index:
                 cell = new.info_df.at[idx, "data"]
                 if cell is not None and hasattr(cell, "copy"):
@@ -176,7 +182,7 @@ class LabData:
         # Use pandas to read in the info file, or synthesize a generic one
         if info_path is not None:
             self.info_df = pd.read_csv(info_path)
-        elif self.info_df is None:
+        elif self.info_df.empty:
             # Generate a generic info df based on the files that were found
             self.info_df = pd.DataFrame(
                 {
@@ -250,11 +256,10 @@ class LabData:
     def print(self) -> None:
         """Print a short summary of the data object."""
         print(repr(self))
-        if self.info_df is not None:
-            print(self.info_df.drop(columns="data", errors="ignore"))
+        print(self.info_df.drop(columns="data", errors="ignore"))
 
     def __repr__(self) -> str:
-        n_rows = 0 if self.info_df is None else len(self.info_df)
+        n_rows = len(self.info_df)
         return f"<{type(self).__name__}: {n_rows} rows>"
 
     def to_md(self) -> str:

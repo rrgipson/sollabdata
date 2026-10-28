@@ -80,7 +80,7 @@ class DFT(LabData):
         )
         if info_path is not None:
             self.info_df = pd.read_csv(info_path)
-        elif self.info_df is None:
+        elif self.info_df.empty:
             # Generate a generic info df based on files
             self.info_df = pd.DataFrame(
                 {"id": [os.path.splitext(f)[0] for f in data_files], "File": data_files}
