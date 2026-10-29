@@ -777,6 +777,8 @@ class AbsCD(LabData):
         # as more than one y column was fitted.
         if "ids" not in kwargs:
             kwargs["ids"] = [id]
+        if "x_range" not in kwargs and xrange is not None:
+            kwargs["x_range"] = xrange
         fig = self.quick_plot(y=y_cols, x=x_col, **kwargs)
         for j, row_traces in enumerate(traces_by_y):
             for lab, values in row_traces:
