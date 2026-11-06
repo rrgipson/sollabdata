@@ -37,6 +37,32 @@ X_UNITS_RE = re.compile(r"^X\d*UNITS\s*,")
 Y_UNITS_RE = re.compile(r"^Y\d*UNITS\s*,")
 
 
+def gauss(x, center, fwhm):
+    """Define the Gaussian Distribution Function. Peak height is exactly 1 at center."""
+    width = fwhm / (2 * np.sqrt(2 * np.log(2)))
+    return np.exp(-1 / 2 * (x - center) ** 2 / (width) ** 2)
+
+
+def band_curves(x, centers, widths, intens):
+    """Evaluate one trace's Gaussian bands.
+
+    Returns ``(total, components)``, where ``components[k]`` is
+    ``intens[k] * gauss(x, centers[k], widths[k])`` and ``total`` is their sum.
+
+    This is the band arithmetic on its own, with no figure or fit attached, so it can
+    be unit-tested headlessly and reused by anything that needs the model curve for a
+    set of parameters -- check_plot, or an interactive guess-refinement loop.
+    """
+    x = np.asarray(x, dtype=float)
+    components = [
+        float(intens[k]) * gauss(x, float(centers[k]), float(widths[k]))
+        for k in range(len(centers))
+    ]
+    # np.sum([], axis=0) is the scalar 0.0, which would not broadcast like a curve
+    total = np.sum(components, axis=0) if components else np.zeros_like(x)
+    return total, components
+
+
 class AbsCD(LabData):
     """Abs/CD Data Class for data from the J-1700 with parent LabData.
 
@@ -359,9 +385,12 @@ class AbsCD(LabData):
         return True
 
     def gauss(self, x, center, fwhm):
-        """Define the Gaussian Distribution Function"""
-        width = fwhm / (2 * np.sqrt(2 * np.log(2)))
-        return np.exp(-1 / 2 * (x - center) ** 2 / (width) ** 2)
+        """Define the Gaussian Distribution Function.
+
+        Kept as a method so existing notebooks and `resid` keep working; the
+        implementation now lives in the module-level `gauss`.
+        """
+        return gauss(x, center, fwhm)
 
     @staticmethod
     def _unpack_fitvars(fitvars, n_traces, num_gauss=None, shared_fwhm=False):
@@ -400,6 +429,18 @@ class AbsCD(LabData):
             for j in range(n_traces)
         ]
         return centers, widths, intens
+
+    @staticmethod
+    def _pack_fitvars(centers, widths, intens_blocks):
+        """Inverse of _unpack_fitvars, always emitting the EXPANDED layout
+        ``[E_1..E_N, W_1..W_N, I_1..I_N per trace]``.
+
+        Lets a caller assemble a vector that `check_plot(result=...)` accepts without
+        having run a fit -- e.g. to overlay a hand-entered band guess.
+        """
+        parts = [np.asarray(centers, dtype=float), np.asarray(widths, dtype=float)]
+        parts += [np.asarray(block, dtype=float) for block in intens_blocks]
+        return np.concatenate(parts)
 
     def resid(self, fitvars, xs, ys, num_gauss=None, shared_fwhm=False):
         """Residual Calculator for Fitting to Gaussians.
@@ -450,6 +491,8 @@ class AbsCD(LabData):
         ftol=1e-13,
         xtol=1e-13,
         scalar=None,
+        *,
+        verbose=1,
     ):
         """Fit Gaussian bands to one or more spectra at once.
 
@@ -484,6 +527,10 @@ class AbsCD(LabData):
                 do not. Pass False to fit spectra recorded on different grids.
             scalar: optional per-trace divisor applied to the normalization area.
             gtol, ftol, xtol: forwarded to least_squares.
+            verbose: forwarded to least_squares (0/1/2) and, at 0, also silences the
+                stored-slice messages and the details table printed at the end. Pass 0
+                from programmatic callers such as a slider/box callback, where the
+                summary would otherwise be reprinted on every update.
 
         Returns:
             (results, details, fit) -- the raw parameter array, a per-band DataFrame,
@@ -628,7 +675,7 @@ class AbsCD(LabData):
             params,
             bounds=bounds,
             args=(xs, nys, num_gauss, shared_fwhm),
-            verbose=1,
+            verbose=int(verbose),
             gtol=gtol,
             ftol=ftol,
             xtol=xtol,
@@ -684,15 +731,17 @@ class AbsCD(LabData):
                 j = pos * n_y + t
                 blocks.append(results[(2 + j) * num_gauss : (3 + j) * num_gauss])
             self.info_df.at[idx, "fit"] = np.concatenate(blocks)
-            print(f"Fit params stored in info_df.at[{idx}, 'fit']  ({one_id})")
+            if verbose:
+                print(f"Fit params stored in info_df.at[{idx}, 'fit']  ({one_id})")
         # Name the traces, since Inten_y* is positional and easy to misread once
         # more than one spectrum is in the fit.
-        if n_traces > 1:
-            print(
-                "Traces: "
-                + ", ".join(f"Inten_y{i} = {lab}" for i, lab in enumerate(labels))
-            )
-        print(details.to_markdown())
+        if verbose:
+            if n_traces > 1:
+                print(
+                    "Traces: "
+                    + ", ".join(f"Inten_y{i} = {lab}" for i, lab in enumerate(labels))
+                )
+            print(details.to_markdown())
 
         return results, details, fit
 
@@ -739,36 +788,23 @@ class AbsCD(LabData):
         # fit vars should be in format [energy1, energy2, ..., width1, w2, ..., scalarAbs1, sA2, ..., scalarCD1, sCD2, ...]
         # fit_gaussians always stores and returns that expanded layout -- one width per
         # band even when the fit tied them -- so num_gauss follows from the length here.
+        # band count follows from the vector length, via _unpack_fitvars
         centers, widths, intens = self._unpack_fitvars(fitvars, len(ys))
-        num_gauss = len(centers)
 
-        # create dataframe for the results
-        fit = pd.DataFrame()
-        fit["x"] = xs
         # group the fit traces by which y they belong to, so each one can go onto the
         # matching quick_plot subplot row below
         traces_by_y = []
         # for each y given, calculate gaussians and collect them for plotting
         for j in range(len(ys)):
             ylab = "y" + str(j)
-            x = xs
-
-            # get a list of the individual gaussian y values
-            gauss_list = [
-                intens[j][i] * self.gauss(x, centers[i], widths[i])
-                for i in range(num_gauss)
-            ]
-            # calculate total for Abs with current params
-            total_fit = np.sum(gauss_list, axis=0)
+            # band arithmetic lives in band_curves, shared with any other caller that
+            # needs the model curve for a set of parameters
+            total_fit, gauss_list = band_curves(xs, centers, widths, intens[j])
 
             # Add total fit, and each gaussian
-            total_lab = "fit_" + id + "_" + ylab
-            fit[total_lab] = total_fit.copy()
-            row_traces = [(total_lab, total_fit)]
+            row_traces = [("fit_" + id + "_" + ylab, total_fit)]
             for k in range(len(gauss_list)):
-                lab = ylab + "_g" + str(k)
-                fit[lab] = gauss_list[k]
-                row_traces.append((lab, gauss_list[k]))
+                row_traces.append((ylab + "_g" + str(k), gauss_list[k]))
             traces_by_y.append(row_traces)
 
         # Plot the data FIRST so quick_plot builds the subplot grid (one row per y),
@@ -794,7 +830,6 @@ class AbsCD(LabData):
                     col=1,
                 )
         return fig
-        # return fit
 
 
 # ---------------------------------------------------------------------------
@@ -842,6 +877,13 @@ class AbsCD(LabData):
 #     stored slices are built, so check_plot needs no knowledge of the mode. The
 #     layout arithmetic that resid() and check_plot() duplicated now lives in one
 #     place, _unpack_fitvars().
+#   - Groundwork for an interactive guess-refinement loop: the band arithmetic is
+#     now a module-level band_curves(x, centers, widths, intens) -> (total,
+#     components) that check_plot delegates to, `gauss` moved to module level with
+#     AbsCD.gauss delegating, _pack_fitvars was added as the inverse of
+#     _unpack_fitvars, and fit_gaussians took a keyword-only verbose=1 that at 0
+#     silences scipy and the trailing summary. Also deleted check_plot's `fit`
+#     DataFrame, which was rebuilt on every call and never returned.
 #   - Channel labels are matched with anchored X_UNITS_RE / Y_UNITS_RE patterns
 #     (XUNITS, YUNITS, Y2UNITS, ...) rather than `"UNITS" in line and "X" in line`,
 #     which misread a y channel whose unit contained an "X" (e.g. FLUX) as the x

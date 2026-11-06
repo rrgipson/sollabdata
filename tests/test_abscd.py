@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from sollabdata import AbsCD
+from sollabdata.abscd import band_curves, gauss
 
 # Path to the fixture folder, resolved relative to THIS file rather than to the
 # current working directory -- so the tests pass no matter where pytest is run from.
@@ -533,6 +534,121 @@ def test_unpack_fitvars_needs_num_gauss_when_shared():
     assert intens[0].tolist() == [1.0, 0.6]
 
 
+# --- groundwork for the interactive fitting loop ----------------------------
+
+
+def test_band_curves_components_and_total():
+    """Each component peaks at exactly its intensity; the total is their sum.
+
+    The Gaussian is normalized to a peak height of 1, so the value AT a band's center
+    is its intensity exactly -- an `==`-grade check, not an approximation.
+    """
+    x = np.linspace(400.0, 900.0, 501)
+    centers, widths, intens = [500.0, 700.0], [50.0, 80.0], [1.0, -0.4]
+
+    total, components = band_curves(x, centers, widths, intens)
+
+    assert len(components) == 2
+    for center, inten, comp in zip(centers, intens, components):
+        at_center = comp[int(np.argmin(np.abs(x - center)))]
+        assert at_center == pytest.approx(inten)
+    assert total == pytest.approx(np.sum(components, axis=0))
+
+
+def test_band_curves_with_no_bands_returns_a_zero_curve():
+    """No bands must give a zero ARRAY, not the scalar np.sum([], axis=0) produces.
+
+    A scalar would not broadcast like a curve, so a caller plotting it would get a
+    single point instead of a flat line.
+    """
+    x = np.linspace(0.0, 10.0, 11)
+    total, components = band_curves(x, [], [], [])
+
+    assert components == []
+    assert total.shape == x.shape
+    assert not np.any(total)
+
+
+def test_module_gauss_matches_the_method(abscd_spectra):
+    """AbsCD.gauss delegates to the module-level function rather than duplicating it."""
+    x = np.linspace(400.0, 800.0, 101)
+    assert abscd_spectra.gauss(x, 600.0, 100.0) == pytest.approx(gauss(x, 600.0, 100.0))
+
+
+def test_pack_fitvars_round_trips_through_unpack():
+    """_pack_fitvars is the inverse of _unpack_fitvars, in the expanded layout."""
+    centers, widths = [500.0, 700.0], [50.0, 80.0]
+    blocks = [[1.0, -0.4], [0.5, -0.2]]  # two traces
+
+    packed = AbsCD._pack_fitvars(centers, widths, blocks)
+    assert len(packed) == (2 + len(blocks)) * 2
+
+    out_c, out_w, out_i = AbsCD._unpack_fitvars(packed, n_traces=len(blocks))
+    assert out_c.tolist() == centers
+    assert out_w.tolist() == widths
+    assert [b.tolist() for b in out_i] == blocks
+
+
+def test_packed_vector_is_accepted_by_check_plot(abscd_spectra):
+    """A hand-built guess can be overlaid without running a fit first.
+
+    This is the contract an interactive guess-refinement loop needs: parameters in,
+    figure out, no fit and no stored info_df["fit"] entry required.
+    """
+    packed = AbsCD._pack_fitvars([600.0], [100.0], [[1.0]])
+    fig = abscd_spectra.check_plot(
+        "Positive", result=packed, x_col="NANOMETERS", y_cols=CD_COL
+    )
+    # data + total fit + one component gaussian
+    assert len(fig.data) == 3
+
+
+def test_check_plot_traces_match_band_curves(abscd_spectra):
+    """The curves check_plot draws are exactly what band_curves computes.
+
+    Pins the refactor against the drawn output: if check_plot ever stops delegating,
+    this fails even though both would still "work".
+    """
+    centers, widths, intens = [600.0, 750.0], [100.0, 120.0], [1.0, 0.3]
+    packed = AbsCD._pack_fitvars(centers, widths, [intens])
+    fig = abscd_spectra.check_plot(
+        "Positive", result=packed, x_col="NANOMETERS", y_cols=CD_COL
+    )
+
+    data = abscd_spectra.info_df.at[0, "data"]
+    total, components = band_curves(data["NANOMETERS"].to_numpy(), centers, widths, intens)
+
+    # traces are [data, total_fit, g0, g1]
+    assert fig.data[1].y == pytest.approx(total)
+    assert fig.data[2].y == pytest.approx(components[0])
+    assert fig.data[3].y == pytest.approx(components[1])
+
+
+def test_fit_gaussians_verbose_zero_is_silent(abscd_spectra, capsys):
+    """verbose=0 silences both scipy and the trailing summary."""
+    abscd_spectra.fit_gaussians(
+        energies=[700], fwhm=[150], intens=[1.5], id="Positive",
+        x_col="NANOMETERS", y_cols=CD_COL, verbose=0,
+    )
+    assert capsys.readouterr().out == ""
+
+
+def test_fit_gaussians_verbose_does_not_change_the_answer(abscd_spectra, capsys):
+    """Quieting the output must not alter the fit, and the default must stay loud."""
+    loud = abscd_spectra.fit_gaussians(
+        energies=[700], fwhm=[150], intens=[1.5], id="Positive",
+        x_col="NANOMETERS", y_cols=CD_COL,
+    )[0]
+    assert capsys.readouterr().out != ""  # default is still verbose
+
+    quiet = abscd_spectra.fit_gaussians(
+        energies=[700], fwhm=[150], intens=[1.5], id="Positive",
+        x_col="NANOMETERS", y_cols=CD_COL, verbose=0,
+    )[0]
+    assert capsys.readouterr().out == ""
+    assert quiet == pytest.approx(loud)
+
+
 # ---------------------------------------------------------------------------
 # Written by RG (Robert Gipson). Template created by Claude (Opus 5), which also
 # made these adjustments: corrected the stale test_dft.py/DFT comments, switched the
@@ -540,4 +656,9 @@ def test_unpack_fitvars_needs_num_gauss_when_shared():
 # column names alongside the shape, moved the fit assertions onto the named `details`
 # columns, and added the negative-feature, bounded-fit, add_eps, and anchored
 # header-key tests.
+# Groundwork tests for the interactive loop: band_curves components/total and its
+# empty-band zero curve, gauss method-vs-module equivalence, _pack_fitvars round trip,
+# a packed guess accepted by check_plot without a fit, check_plot's drawn traces
+# matching band_curves, and fit_gaussians(verbose=0) being silent without changing
+# the result.
 # ---------------------------------------------------------------------------
