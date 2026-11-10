@@ -45,6 +45,10 @@ dependencies = [
 notebook = ["ipython"]
 # Extras for running the test suite: `pip install -e ".[dev]"`
 dev = ["pytest>=7.0"]
+# Extras for the interactive fitting dashboard: `pip install -e ".[widgets]"`.
+# Only ipywidgets -- the dashboard renders a plain plotly Figure inside an Output
+# widget rather than using FigureWidget, so anywidget is deliberately not needed.
+widgets = ["ipywidgets>=8.0"]
 
 [project.urls]
 Homepage = "https://github.com/rrgipson/sollabdata"

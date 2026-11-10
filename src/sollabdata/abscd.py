@@ -831,6 +831,57 @@ class AbsCD(LabData):
                 )
         return fig
 
+    def fit_dashboard(
+        self,
+        id,
+        energies,
+        fwhm,
+        intens,
+        x_col=WAVE,
+        y_col="deps",
+        xrange=None,
+        var_name="data",
+        **plot_kwargs,
+    ):
+        """Interactive band-fitting dashboard for one spectrum, for notebook use.
+
+        Numeric boxes hold each band's center, width and intensity; the overlay redraws
+        when a value is committed; a Fit button runs fit_gaussians from the current
+        values and snaps the boxes to the result; a Show-call button prints the
+        equivalent fit_gaussians(...) source to paste into a cell.
+
+        Requires ipywidgets, which is imported here rather than at module scope so that
+        `import sollabdata` works without a notebook stack. Install with
+        `pip install -e ".[widgets]"`, or `conda install -c conda-forge ipywidgets`.
+
+        Args:
+            id: the info_df id to fit. One spectrum only -- multiple ids are supported
+                by fit_gaussians itself and are clearer in pasted source.
+            energies, fwhm, intens: the starting guess, one value per band each.
+            x_col, y_col: columns to fit against. One y column only.
+            xrange: [min, max] window, applied to both the overlay and the fit.
+            var_name: what the object is called in the emitted source.
+            **plot_kwargs: forwarded to check_plot/quick_plot (height, width, ...).
+
+        Returns:
+            A BandFitDashboard. Display it as the last expression in a cell, or call
+            `display(dash.view)`. `dash.state()` reads the boxes back at any time.
+        """
+        from .fitdash import BandFitDashboard  # deferred: keeps `import sollabdata` clean
+
+        return BandFitDashboard(
+            self,
+            id,
+            energies,
+            fwhm,
+            intens,
+            x_col=x_col,
+            y_col=y_col,
+            xrange=xrange,
+            var_name=var_name,
+            **plot_kwargs,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Code written by RG (Robert Gipson).
@@ -884,6 +935,9 @@ class AbsCD(LabData):
 #     _unpack_fitvars, and fit_gaussians took a keyword-only verbose=1 that at 0
 #     silences scipy and the trailing summary. Also deleted check_plot's `fit`
 #     DataFrame, which was rebuilt on every call and never returned.
+#   - Added AbsCD.fit_dashboard(), the entry point for the notebook dashboard in
+#     fitdash.py. The ipywidgets import is deferred into the method body so that
+#     `import sollabdata` still works without a notebook stack installed.
 #   - Channel labels are matched with anchored X_UNITS_RE / Y_UNITS_RE patterns
 #     (XUNITS, YUNITS, Y2UNITS, ...) rather than `"UNITS" in line and "X" in line`,
 #     which misread a y channel whose unit contained an "X" (e.g. FLUX) as the x

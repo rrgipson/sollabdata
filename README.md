@@ -51,6 +51,7 @@ you know what is in play and why:
 | `tabulate` | 0.8.9 | `info_df.to_markdown()`, used by `to_md()` |
 | `cclib` | 1.7 | unit conversion (`convertor`) in the `DFT` class |
 | `pytest` | 7.0 | test suite only (`[dev]` extra) |
+| `ipywidgets` | 8.0 | the interactive fitting dashboard only (`[widgets]` extra) |
 
 Note that `cclib` is used here only to *read* calculation output. Producing the
 per-calculation json files from raw ORCA/Gaussian output is a separate upstream step
@@ -127,6 +128,23 @@ pipelines, and several pieces only make sense in that setting:
   convergence reports, and which scan was subtracted from which. That is intentional
   feedback for cell-by-cell work, not stray debugging output. Pass `-s` to pytest if
   you want to see it during tests.
+
+- **`fit_dashboard()` is the interactive way to land an initial guess.** Band fitting
+  lives or dies on the starting parameters, so it gives you a numeric box per band
+  parameter, redraws the model over the data when you commit a value, and fits from
+  wherever you left the boxes:
+
+  ```python
+  dash = data.fit_dashboard(
+      "Positive", energies=[640], fwhm=[120], intens=[0.8],
+      x_col="NANOMETERS", y_col="CD/DC [mdeg]",
+  )
+  dash          # display it as the cell's last expression
+  ```
+
+  Needs the `[widgets]` extra. "Show call" prints the matching `fit_gaussians(...)`
+  source to paste into a cell, so the notebook keeps the record rather than the
+  widget state. `dash.state()` reads the boxes back at any time.
 
 - **In-place mutation suits cell-by-cell work, but watch out for re-running a cell.**
   Methods that write a derived column (`add_wavenums`, `add_eps`) just overwrite it, and
@@ -213,6 +231,7 @@ folder immediately; `info_csv` may be a bare file name in that folder or a full 
 | `add_eps(conc)` / `add_deps(conc)` | Beer–Lambert ε and Δε |
 | `fit_gaussians(...)` | fit Gaussian bands across any number of spectra and y columns at once, sharing band energies and widths while each trace keeps its own intensities; pass `fwhm` as a float to tie every band to one shared width |
 | `check_plot(id)` | overlay a fit on the data |
+| `fit_dashboard(id, ...)` | interactive notebook dashboard: numeric boxes for each band, live overlay, a Fit button, and a button that emits the equivalent `fit_gaussians(...)` call |
 
 ### MCD — adds field and temperature
 
@@ -320,6 +339,11 @@ Things that will bite you, roughly in order of likelihood:
   then every y column of the second. That ordering is what `intens`, `low_bds`,
   `up_bds`, `scalar`, and the `Inten_y*` columns are indexed by. The function prints
   the trace list whenever more than one is being fit.
+- **`fit_dashboard` re-renders rather than updating in place, so zoom resets on each
+  redraw.** Plotly's `FigureWidget`, which would allow in-place updates, raises
+  `KeyError: 'uid'` from `_handler_js2py_traceDeltas` in plotly 7.0.0 and stays broken
+  across a kernel restart, so the dashboard deliberately uses a plain `Figure` inside an
+  `Output` widget. Use `xrange=` to pin the window you care about.
 - **A float `fwhm` changes the expected bounds length.** A shared width is a single
   parameter, so `low_bds`/`up_bds` take one width bound rather than `num_gauss` of
   them. The returned `results` still reports the width once per band; only `fit.x`
