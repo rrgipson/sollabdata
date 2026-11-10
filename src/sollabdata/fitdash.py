@@ -102,6 +102,14 @@ class BandFitDashboard:
         boxes: the FloatText widgets, laid out ``[E0, W0, I0, E1, W1, I1, ...]``.
         redraws: how many redraws have happened, which makes the mute flag's effect
             observable from a test.
+
+    Args to __init__ beyond the obvious:
+        box_precision: decimal places shown in the boxes, and used for the emitted
+            source. Values are rounded on the way in, so ``state()`` returns what is
+            displayed rather than a longer float the box is truncating for show.
+        box_width: CSS width of each box. The default fits ~10 digits while keeping
+            three boxes on one line without horizontal scrolling; widen it if a band
+            parameter needs more.
     """
 
     def __init__(
@@ -115,6 +123,8 @@ class BandFitDashboard:
         y_col: str = "deps",
         xrange=None,
         var_name: str = "data",
+        box_precision: int = 3,
+        box_width: str = "130px",
         **plot_kwargs,
     ) -> None:
         widgets = _require_ipywidgets()
@@ -138,6 +148,8 @@ class BandFitDashboard:
         self._y_col = y_col
         self._xrange = xrange
         self._var_name = var_name
+        self._precision = box_precision
+        self._box_width = box_width
         self._n = n
         self._muted = False
         self.redraws = 0
@@ -196,16 +208,33 @@ class BandFitDashboard:
         pasteable source -- a number that is not the fit result.
         """
         widgets = self._w
+        # A narrow box plus a narrow description label: the ipywidgets defaults are wide
+        # enough that three boxes overflow the cell and force horizontal scrolling.
+        layout = widgets.Layout(width=self._box_width)
+        style = {"description_width": "24px"}
         rows, boxes = [], []
         for i, (c, w, v) in enumerate(zip(energies, fwhm, intens)):
             trio = [
-                widgets.FloatText(value=c, description=f"E{i}", step=10.0),
-                widgets.FloatText(value=w, description=f"W{i}", step=10.0),
-                widgets.FloatText(value=v, description=f"I{i}", step=0.1),
+                widgets.FloatText(
+                    value=self._round(c), description=f"E{i}", step=10.0,
+                    layout=layout, style=style,
+                ),
+                widgets.FloatText(
+                    value=self._round(w), description=f"W{i}", step=10.0,
+                    layout=layout, style=style,
+                ),
+                widgets.FloatText(
+                    value=self._round(v), description=f"I{i}", step=0.1,
+                    layout=layout, style=style,
+                ),
             ]
             boxes += trio
             rows.append(widgets.HBox(trio))
         return boxes, rows
+
+    def _round(self, value) -> float:
+        """Round to the configured precision, so the boxes do not show noise digits."""
+        return round(float(value), self._precision)
 
     # -- state ---------------------------------------------------------------
 
@@ -225,7 +254,7 @@ class BandFitDashboard:
         self._muted = True
         try:
             for box, value in zip(self.boxes, ordered):
-                box.value = float(value)
+                box.value = self._round(value)
         finally:
             self._muted = False
 
@@ -288,6 +317,7 @@ class BandFitDashboard:
                     y_cols=self._y_col,
                     xrange=self._xrange,
                     var_name=self._var_name,
+                    precision=self._precision,
                 )
             )
 
@@ -307,4 +337,7 @@ class BandFitDashboard:
 # need it. Rendering deliberately uses Output + a plain plotly Figure rather than
 # FigureWidget, which in plotly 7.0.0 raises KeyError: 'uid' from
 # _handler_js2py_traceDeltas and stays broken across a kernel restart.
+# Box values are rounded to box_precision (3 dp) on the way in, and the boxes use a
+# narrow width plus a narrow description label, because the ipywidgets defaults make a
+# band's three boxes overflow the cell and force horizontal scrolling.
 # ---------------------------------------------------------------------------

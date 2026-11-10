@@ -240,10 +240,72 @@ def test_show_call_emits_the_current_box_values(dash):
     compile(src, "<emitted>", "exec")
 
 
+# --- display formatting ------------------------------------------------------
+
+
+def test_boxes_round_the_initial_guess(abscd_spectra):
+    """Long floats in the guess are rounded for display, and state() agrees.
+
+    Rounding on the way in rather than only for show means state() -- and so the
+    emitted source -- reports exactly what the box displays.
+    """
+    pytest.importorskip("ipywidgets")
+    dash = abscd_spectra.fit_dashboard(
+        "Positive",
+        energies=[640.1234567],
+        fwhm=[120.98765],
+        intens=[0.7777777],
+        x_col="NANOMETERS",
+        y_col=CD_COL,
+    )
+    assert dash.state() == ([640.123], [120.988], [0.778])
+
+
+def test_boxes_round_the_fit_result(dash):
+    """Fitted values land in the boxes rounded, not as 14-digit floats."""
+    dash._on_fit_click(None)
+    for box in dash.boxes:
+        assert box.value == round(box.value, 3)
+
+
+def test_box_precision_is_configurable(abscd_spectra):
+    pytest.importorskip("ipywidgets")
+    dash = abscd_spectra.fit_dashboard(
+        "Positive", [640.1234567], [120.0], [0.8],
+        x_col="NANOMETERS", y_col=CD_COL, box_precision=1,
+    )
+    assert dash.state()[0] == [640.1]
+
+
+def test_boxes_are_narrow_enough_to_avoid_horizontal_scrolling(dash):
+    """Three boxes per band must fit a cell's width.
+
+    The ipywidgets defaults are wide enough that a band's row overflows and forces
+    horizontal scrolling, so both the box width and the description label are pinned.
+    """
+    widths = {b.layout.width for b in dash.boxes}
+    assert widths == {"130px"}
+    assert {b.style.description_width for b in dash.boxes} == {"24px"}
+    # a band's whole row stays well inside a typical ~900px cell
+    assert 3 * int(dash.boxes[0].layout.width.removesuffix("px")) < 500
+
+
+def test_emitted_source_uses_the_box_precision(dash):
+    """The pasteable call shows the same numbers the boxes do."""
+    dash.boxes[0].value = 612.3456
+    src = fit_call_source(
+        dash._id, *dash.state(), x_col=dash._x_col, y_cols=dash._y_col,
+        precision=dash._precision,
+    )
+    assert "energies=[612.346]" in src
+    compile(src, "<emitted>", "exec")
+
+
 # ---------------------------------------------------------------------------
 # Written by RG (Robert Gipson). Created by Claude (Opus 5): tests for fitdash.py --
 # fit_call_source (validity, !r quoting of awkward names, optional xrange, and an
 # exec round trip against the real fit), import safety with ipywidgets absent,
 # dashboard construction and its guards, the plain-Figure choice, and the in-process
-# box -> observer -> redraw -> figure wiring including the Fit button's mute flag.
+# box -> observer -> redraw -> figure wiring including the Fit button's mute flag,
+# plus box rounding and the narrow layout that keeps a band's row from overflowing.
 # ---------------------------------------------------------------------------

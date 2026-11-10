@@ -841,6 +841,8 @@ class AbsCD(LabData):
         y_col="deps",
         xrange=None,
         var_name="data",
+        box_precision=3,
+        box_width="130px",
         **plot_kwargs,
     ):
         """Interactive band-fitting dashboard for one spectrum, for notebook use.
@@ -861,6 +863,9 @@ class AbsCD(LabData):
             x_col, y_col: columns to fit against. One y column only.
             xrange: [min, max] window, applied to both the overlay and the fit.
             var_name: what the object is called in the emitted source.
+            box_precision: decimal places shown in the boxes and in that source.
+            box_width: CSS width of each box; the default keeps a band's three boxes on
+                one line without horizontal scrolling while fitting ~10 digits.
             **plot_kwargs: forwarded to check_plot/quick_plot (height, width, ...).
 
         Returns:
@@ -879,6 +884,8 @@ class AbsCD(LabData):
             y_col=y_col,
             xrange=xrange,
             var_name=var_name,
+            box_precision=box_precision,
+            box_width=box_width,
             **plot_kwargs,
         )
 
