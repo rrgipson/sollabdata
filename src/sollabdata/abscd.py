@@ -841,6 +841,8 @@ class AbsCD(LabData):
         y_col="deps",
         xrange=None,
         var_name="data",
+        show_residuals=True,
+        tie_fwhm=False,
         box_precision=3,
         box_width="130px",
         **plot_kwargs,
@@ -863,6 +865,11 @@ class AbsCD(LabData):
             x_col, y_col: columns to fit against. One y column only.
             xrange: [min, max] window, applied to both the overlay and the fit.
             var_name: what the object is called in the emitted source.
+            show_residuals: draw a residual panel (data minus total fit) beneath the
+                main figure. Structureless residuals are how a band fit is judged, so
+                this defaults on; pass False to save the vertical space.
+            tie_fwhm: start with every band's width tied to one shared parameter, as a
+                scalar fwhm does in fit_gaussians. Toggleable from the checkbox.
             box_precision: decimal places shown in the boxes and in that source.
             box_width: CSS width of each box; the default keeps a band's three boxes on
                 one line without horizontal scrolling while fitting ~10 digits.
@@ -884,6 +891,8 @@ class AbsCD(LabData):
             y_col=y_col,
             xrange=xrange,
             var_name=var_name,
+            show_residuals=show_residuals,
+            tie_fwhm=tie_fwhm,
             box_precision=box_precision,
             box_width=box_width,
             **plot_kwargs,

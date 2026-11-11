@@ -20,7 +20,7 @@ import pytest
 
 from sollabdata import AbsCD
 from sollabdata.abscd import band_curves
-from sollabdata.fitdash import fit_call_source
+from sollabdata.fitdash import fit_call_source, fit_quality
 
 DATA_DIR = Path(__file__).parent / "data" / "abscd"
 CD_COL = "CD/DC [mdeg]"
@@ -173,6 +173,11 @@ def test_dashboard_figure_has_no_comm_handler(dash):
 # --- wiring: box -> redraw -> figure -----------------------------------------
 
 
+def _trace(dash, name):
+    """Look a trace up by name, the way the dashboard itself does."""
+    return dash.fig.data[dash._trace_idx[name]]
+
+
 def test_changing_a_box_redraws_the_overlay(dash):
     """Assigning a box value fires the observer and updates the figure's band traces.
 
@@ -180,15 +185,15 @@ def test_changing_a_box_redraws_the_overlay(dash):
     frontend involved.
     """
     before = dash.redraws
-    total_trace = dash.fig.data[dash._fit_start]
-    assert total_trace.y[int(np.argmax(total_trace.y))] == pytest.approx(0.8, abs=1e-6)
+    total = _trace(dash, f"fit_{dash._id}_y0")
+    assert total.y[int(np.argmax(total.y))] == pytest.approx(0.8, abs=1e-6)
 
     dash.boxes[0].value = 600.0  # move the center
     dash.boxes[2].value = 1.0  # and the intensity
 
     assert dash.redraws == before + 2  # one redraw per committed box
     expected, _ = band_curves(dash._x, [600.0], [120.0], [1.0])
-    assert dash.fig.data[dash._fit_start].y == pytest.approx(expected)
+    assert _trace(dash, f"fit_{dash._id}_y0").y == pytest.approx(expected)
 
 
 def test_fit_button_snaps_boxes_and_redraws_once(dash):
@@ -299,6 +304,214 @@ def test_emitted_source_uses_the_box_precision(dash):
     )
     assert "energies=[612.346]" in src
     compile(src, "<emitted>", "exec")
+
+
+# --- name-based trace lookup -------------------------------------------------
+
+
+def test_band_traces_are_found_by_name(dash):
+    """The dashboard locates its traces by name, not by offset in fig.data.
+
+    Positional indexing is what would break as soon as the band count changes, so this
+    pins the contract check_plot's trace naming provides.
+    """
+    assert f"fit_{dash._id}_y0" in dash._trace_idx
+    assert "y0_g0" in dash._trace_idx
+    # the data trace comes first and is NOT one of the band traces
+    assert dash._trace_idx[f"fit_{dash._id}_y0"] > 0
+
+
+# --- add / remove bands ------------------------------------------------------
+
+
+def test_add_band_grows_boxes_figure_and_overlay(dash):
+    """A new band adds three boxes, a component trace, and shows up in the total."""
+    assert dash.n_bands == 1
+    before_traces = len(dash.fig.data)
+
+    dash._on_add_band(None)
+
+    assert dash.n_bands == 2
+    assert len(dash.boxes) == 6
+    assert [b.description for b in dash.boxes[3:]] == ["E1", "W1", "I1"]
+    assert len(dash.fig.data) == before_traces + 1
+    assert "y0_g1" in dash._trace_idx
+
+    # the new band is seeded at the largest |residual|, with that residual's signed
+    # value as its intensity and the previous band's width
+    centers, widths, intens = dash.state()
+    total, _ = band_curves(dash._x, [640.0], [120.0], [0.8])
+    worst = int(np.argmax(np.abs(dash._y - total)))
+    assert centers[1] == pytest.approx(dash._x[worst], abs=0.001)
+    assert intens[1] == pytest.approx((dash._y - total)[worst], abs=0.001)
+    assert widths[1] == widths[0]
+
+    # and the drawn total is the two-band sum
+    expected, _ = band_curves(dash._x, centers, widths, intens)
+    assert _trace(dash, f"fit_{dash._id}_y0").y == pytest.approx(expected)
+
+
+def test_remove_band_shrinks_everything_back(dash):
+    dash._on_add_band(None)
+    dash._on_add_band(None)
+    assert dash.n_bands == 3
+
+    dash._on_remove_band(None)
+
+    assert dash.n_bands == 2
+    assert len(dash.boxes) == 6
+    assert "y0_g2" not in dash._trace_idx
+
+
+def test_cannot_remove_the_last_band(dash):
+    assert dash.n_bands == 1
+    dash._on_remove_band(None)
+    assert dash.n_bands == 1
+
+
+def test_fit_works_after_adding_a_band(dash):
+    """A changed band count must still fit -- the regression positional indexing caused.
+
+    Two bands on the fixture's single real feature is degenerate, so this asserts the
+    machinery survives rather than asserting particular band parameters.
+    """
+    dash._on_add_band(None)
+    dash._on_fit_click(None)
+
+    centers, widths, intens = dash.state()
+    assert len(centers) == 2
+    # the two-band model still reproduces the data, however it distributes itself
+    total, _ = band_curves(dash._x, centers, widths, intens)
+    assert np.max(np.abs(dash._y - total)) < 0.05
+
+
+# --- residual panel ----------------------------------------------------------
+
+
+def test_residual_panel_is_on_by_default_and_tracks_the_fit(dash):
+    """The residual trace is data minus the current total, and shrinks after a fit."""
+    assert dash.resid_fig is not None
+
+    total, _ = band_curves(dash._x, *dash.state())
+    assert dash.resid_fig.data[0].y == pytest.approx(dash._y - total)
+
+    before = float(np.max(np.abs(dash.resid_fig.data[0].y)))
+    dash._on_fit_click(None)
+    after = float(np.max(np.abs(dash.resid_fig.data[0].y)))
+    assert after < before
+
+
+def test_residual_panel_can_be_switched_off(abscd_spectra):
+    pytest.importorskip("ipywidgets")
+    dash = abscd_spectra.fit_dashboard(
+        "Positive", [640.0], [120.0], [0.8],
+        x_col="NANOMETERS", y_col=CD_COL, show_residuals=False,
+    )
+    assert dash.resid_fig is None
+    dash._on_fit_click(None)  # must not blow up with no residual figure to update
+
+
+# --- tied FWHM ---------------------------------------------------------------
+
+
+def test_tying_fwhm_mirrors_and_disables_the_other_width_boxes(dash):
+    dash._on_add_band(None)
+    assert dash.n_bands == 2
+    width_boxes = dash._width_boxes()
+    width_boxes[1].value = 55.0
+    assert not dash.tied
+
+    dash._tie_cb.value = True
+
+    assert dash.tied
+    assert width_boxes[1].disabled and not width_boxes[0].disabled
+    assert width_boxes[1].value == width_boxes[0].value
+
+
+def test_editing_a_tied_width_propagates_to_every_band(dash):
+    dash._on_add_band(None)
+    dash._tie_cb.value = True
+    before = dash.redraws
+
+    dash.boxes[1].value = 90.0  # W0
+
+    assert dash.state()[1] == [90.0, 90.0]
+    # one redraw, not one per mirrored box
+    assert dash.redraws == before + 1
+
+
+def test_tied_fit_passes_a_scalar_fwhm(dash):
+    """Tied widths must reach fit_gaussians as a scalar, which is what ties them.
+
+    A list of equal widths would fit them independently and merely happen to agree.
+    """
+    dash._on_add_band(None)
+    dash._tie_cb.value = True
+    widths = dash.state()[1]
+    assert np.ndim(dash._fwhm_arg(widths)) == 0
+
+    dash._on_fit_click(None)
+    fitted = dash.state()[1]
+    assert fitted[0] == fitted[1]  # one shared parameter came back
+
+
+def test_untied_fit_passes_a_list(dash):
+    widths = dash.state()[1]
+    assert np.ndim(dash._fwhm_arg(widths)) == 1
+
+
+def test_tied_source_emits_a_scalar_fwhm(dash):
+    dash._tie_cb.value = True
+    src = fit_call_source(
+        dash._id, *[dash.state()[0], dash._fwhm_arg(dash.state()[1]), dash.state()[2]],
+        x_col=dash._x_col, y_cols=dash._y_col,
+    )
+    assert "fwhm=120.0" in src  # a scalar, not [120.0]
+    compile(src, "<emitted>", "exec")
+
+
+# --- revert ------------------------------------------------------------------
+
+
+def test_revert_restores_the_pre_fit_values(dash):
+    before = dash.state()
+    dash._on_fit_click(None)
+    assert dash.state() != before  # the fit moved them
+
+    dash._on_revert_click(None)
+
+    assert dash.state() == before
+
+
+def test_revert_without_a_fit_is_a_no_op(dash):
+    before = dash.state()
+    dash._on_revert_click(None)
+    assert dash.state() == before
+
+
+def test_adding_a_band_clears_the_revert_stash(dash):
+    """A stashed state from a different band count must not be restorable.
+
+    Restoring 3 values into 6 boxes would silently leave half of them stale.
+    """
+    dash._on_fit_click(None)
+    assert dash._pre_fit is not None
+    dash._on_add_band(None)
+    assert dash._pre_fit is None
+
+
+# --- fit quality --------------------------------------------------------------
+
+
+def test_fit_quality_reports_cost_and_convergence(abscd_spectra):
+    """The OptimizeResult the dashboard used to discard is now summarised."""
+    _results, _details, fit = abscd_spectra.fit_gaussians(
+        energies=[700], fwhm=[150], intens=[1.5], id="Positive",
+        x_col="NANOMETERS", y_cols=CD_COL, verbose=0,
+    )
+    summary = fit_quality(fit)
+    for field in ("cost=", "optimality=", "nfev=", "status="):
+        assert field in summary
 
 
 # ---------------------------------------------------------------------------
