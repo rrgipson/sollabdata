@@ -576,6 +576,59 @@ def test_displaying_the_dashboard_draws_it(dash, monkeypatch):
     assert dash.redraws == 1  # and only then is anything drawn into it
 
 
+# --- closing stale dashboards ------------------------------------------------
+
+
+def test_close_closes_every_widget(dash):
+    """close() must tear down all of the dashboard's widgets.
+
+    ipywidgets keeps models in a global registry and the frontend keeps rendering any
+    view bound to a live model, so re-running a cell leaves the previous dashboard's
+    views on screen. They look identical, which reads as stacked copies of one plot.
+    """
+    owned = [*dash.boxes, dash._band_box, dash._plot_out, dash._resid_out,
+             dash._log_out, dash._tie_cb, dash.view]
+    assert all(w.comm is not None for w in owned)
+
+    dash.close()
+
+    assert all(w.comm is None for w in owned)
+
+
+def test_close_is_idempotent(dash):
+    """Closing twice must not raise -- the notebook idiom calls it unconditionally."""
+    dash.close()
+    dash.close()
+
+
+def test_replacing_closes_the_previous_dashboard(abscd_spectra):
+    """fit_dashboard(replacing=old) tears the old one down before building the new."""
+    pytest.importorskip("ipywidgets")
+    first = abscd_spectra.fit_dashboard(
+        "Positive", [640.0], [120.0], [0.8], x_col="NANOMETERS", y_col=CD_COL
+    )
+    assert first.view.comm is not None
+
+    second = abscd_spectra.fit_dashboard(
+        "Positive", [640.0], [120.0], [0.8], x_col="NANOMETERS", y_col=CD_COL,
+        replacing=first,
+    )
+
+    assert first.view.comm is None  # the old views can no longer be rendered
+    assert second.view.comm is not None
+    assert second.state() == ([640.0], [120.0], [0.8])
+
+
+def test_replacing_none_is_fine(abscd_spectra):
+    """The idiom passes globals().get(...), which is None on the first run."""
+    pytest.importorskip("ipywidgets")
+    dash = abscd_spectra.fit_dashboard(
+        "Positive", [640.0], [120.0], [0.8], x_col="NANOMETERS", y_col=CD_COL,
+        replacing=None,
+    )
+    assert dash.view.comm is not None
+
+
 # ---------------------------------------------------------------------------
 # Written by RG (Robert Gipson). Created by Claude (Opus 5): tests for fitdash.py --
 # fit_call_source (validity, !r quoting of awkward names, optional xrange, and an

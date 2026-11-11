@@ -845,6 +845,7 @@ class AbsCD(LabData):
         tie_fwhm=False,
         box_precision=3,
         box_width="130px",
+        replacing=None,
         **plot_kwargs,
     ):
         """Interactive band-fitting dashboard for one spectrum, for notebook use.
@@ -873,6 +874,11 @@ class AbsCD(LabData):
             box_precision: decimal places shown in the boxes and in that source.
             box_width: CSS width of each box; the default keeps a band's three boxes on
                 one line without horizontal scrolling while fitting ~10 digits.
+            replacing: a dashboard from a previous run of this cell, whose widgets are
+                closed first. Without it, re-running the cell leaves the old
+                dashboard's views on screen -- they look identical, so repeated runs
+                read as stacked copies of the same plot. Idiom:
+                `dash = data.fit_dashboard(..., replacing=globals().get("dash"))`.
             **plot_kwargs: forwarded to check_plot/quick_plot (height, width, ...).
 
         Returns:
@@ -880,6 +886,9 @@ class AbsCD(LabData):
             `display(dash.view)`. `dash.state()` reads the boxes back at any time.
         """
         from .fitdash import BandFitDashboard  # deferred: keeps `import sollabdata` clean
+
+        if replacing is not None:
+            replacing.close()
 
         return BandFitDashboard(
             self,

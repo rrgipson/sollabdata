@@ -581,6 +581,32 @@ class BandFitDashboard:
 
     # -- display -------------------------------------------------------------
 
+    def close(self):
+        """Tear down every widget this dashboard owns.
+
+        ipywidgets keeps models alive in a global registry, and the frontend keeps
+        rendering any view bound to a live model. Re-running a cell that builds a
+        dashboard therefore leaves the previous one's views on screen -- they look
+        identical, so N executions read as N stacked copies of the same plot even
+        though each dashboard drew exactly once.
+
+        Call this before rebuilding, or use the `replacing=` argument of
+        AbsCD.fit_dashboard, which does it for you.
+        """
+        for widget in (
+            *self.boxes,
+            self._band_box,
+            self._plot_out,
+            self._resid_out,
+            self._log_out,
+            self._tie_cb,
+            self.view,
+        ):
+            try:
+                widget.close()
+            except Exception:  # pragma: no cover - a already-closed widget is fine
+                pass
+
     def _ipython_display_(self):
         """Display the view, then draw into it.
 
