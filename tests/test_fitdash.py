@@ -549,10 +549,14 @@ def test_construction_does_not_render_before_the_widget_exists(dash):
     Writing into an Output that the frontend has not seen yet is what made each redraw
     stack another figure, so construction recomputes the figure data but renders
     nothing. The first render happens in _ipython_display_.
+
+    NOTE: only `redraws` is meaningful here. An Output widget forwards displays over its
+    comm without ever populating the `outputs` trait -- measured in a live kernel, it
+    reads 0 even with a figure visibly rendered -- so asserting on `outputs` proves
+    nothing either way. Earlier versions of these tests did exactly that and passed
+    against a render path that was visibly broken.
     """
     assert dash.redraws == 0
-    assert dash._plot_out.outputs == ()
-    assert dash._resid_out.outputs == ()
 
     # but the figure data is already current, so a later display draws the right thing
     expected, _ = band_curves(dash._x, *dash.state())

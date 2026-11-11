@@ -431,9 +431,14 @@ class BandFitDashboard:
         `application/vnd.plotly.v1+json` bundle to `outputs` rendered nothing and hung
         the cell, and `append_display_data()` stores an output with no mime data at all.
 
-        Redraws stacking a new figure each time was an *ordering* problem rather than a
+        Redraws stacking a new figure each time was an *ordering* problem, not a
         clearing one -- see `_ipython_display_`, which is where the first draw happens
-        so that the widget exists before anything is written into it.
+        so the widget exists before anything is written into it. Measured in a live
+        kernel, this path clears correctly: three successive displays leave one figure.
+
+        Do not try to verify any of this by inspecting `out.outputs`. The widget
+        forwards displays over its comm without populating that trait, so it reads
+        empty even with a figure rendered, in a kernel as well as under pytest.
         """
         from IPython.display import clear_output, display
 
