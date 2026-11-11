@@ -218,20 +218,21 @@ def test_fit_button_does_not_print_the_fit_summary(dash, capsys):
     """The Fit handler passes verbose=0, so the details table and the stored-slice
     message go to the log widget rather than flooding the cell on every click.
 
-    This cannot assert empty stdout. Outside an IPython kernel neither `display(fig)`
-    nor `with Output()` captures, so the redraw's figure repr and the dashboard's own
-    deliberate log print both land in stdout under pytest. The claim being checked is
-    specifically that fit_gaussians did not add its own copy.
+    Nothing should reach stdout at all now: fit_gaussians runs with verbose=0, and the
+    dashboard writes its own summary into the log widget by assigning the output bundle
+    rather than printing, so it no longer leaks out of the widget under pytest either.
     """
     capsys.readouterr()
     dash._on_fit_click(None)
     out = capsys.readouterr().out
 
-    # fit_gaussians' own per-id message, printed only when verbose
-    assert "Fit params stored in info_df" not in out
-    # the details table appears once -- the dashboard's log print. Twice would mean
-    # fit_gaussians printed its copy too, i.e. verbose=0 was not threaded through.
-    assert out.count("Inten_y0") == 1
+    assert "Fit params stored in info_df" not in out  # fit_gaussians' own message
+    assert "Inten_y0" not in out  # the details table stays inside the log widget
+
+    # ...where it is actually present
+    logged = dash._log_out.outputs[0]["text"]
+    assert "Inten_y0" in logged
+    assert "cost=" in logged  # the fit-quality line rides along
 
 
 def test_show_call_emits_the_current_box_values(dash):
@@ -528,33 +529,37 @@ def test_redraw_replaces_the_plot_instead_of_appending(dash):
     that path, so every redraw appended another copy -- four redraws showed four
     stacked plots, each updating together.
 
-    Checked by planting a marker output and confirming the redraw removes it. Under
-    pytest the replacement display does not itself land in `outputs` (the context
-    manager only captures inside a kernel), so the assertion is about the stale content
-    being gone rather than about the new content arriving.
+    Because the bundle is assigned rather than displayed into the widget, the count is
+    observable without a kernel: exactly one output, carrying the plotly mime type.
     """
     dash._plot_out.outputs = (STALE,)
     dash._resid_out.outputs = (STALE,)
 
     dash._redraw()
 
-    assert STALE not in dash._plot_out.outputs
-    assert STALE not in dash._resid_out.outputs
+    for out in (dash._plot_out, dash._resid_out):
+        assert len(out.outputs) == 1
+        assert STALE not in out.outputs
+        assert list(out.outputs[0]["data"]) == ["application/vnd.plotly.v1+json"]
 
 
 def test_repeated_redraws_do_not_accumulate(dash):
     """Many redraws must not pile up outputs."""
     for value in (610.0, 620.0, 630.0, 640.0):
         dash.boxes[0].value = value
-    assert len(dash._plot_out.outputs) <= 1
-    assert len(dash._resid_out.outputs) <= 1
+    assert dash.redraws >= 4  # the redraws really happened
+    assert len(dash._plot_out.outputs) == 1
+    assert len(dash._resid_out.outputs) == 1
 
 
 def test_log_replaces_previous_messages(dash):
     """The log box shows the latest message only, not a transcript."""
     dash._log_out.outputs = (STALE,)
-    dash._on_code_click(None)
+    for _ in range(3):
+        dash._on_code_click(None)
+    assert len(dash._log_out.outputs) == 1
     assert STALE not in dash._log_out.outputs
+    assert "fit_gaussians(" in dash._log_out.outputs[0]["text"]
 
 
 def test_render_clears_before_displaying():
@@ -566,7 +571,9 @@ def test_render_clears_before_displaying():
 
     out = widgets.Output()
     out.outputs = (STALE,)
-    BandFitDashboard._render(out, go.Figure())
+    for _ in range(5):
+        BandFitDashboard._render(out, go.Figure())
+    assert len(out.outputs) == 1
     assert STALE not in out.outputs
 
 

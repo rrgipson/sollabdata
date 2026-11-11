@@ -417,29 +417,43 @@ class BandFitDashboard:
     def _render(out, figure):
         """Replace an Output widget's contents with `figure`.
 
-        Empties the widget by assigning `outputs = ()` rather than calling
-        clear_output(). The Output widget does not honour a pending clear from
-        clear_output(wait=True) -- nor from clear_output() -- so every redraw appended
-        another copy of the figure instead of replacing it, and four redraws left four
-        stacked plots. Assigning the trait empties it synchronously.
+        Builds the display bundle and *assigns* it, rather than displaying into the
+        widget as a context manager. That is the only approach with no append path at
+        all: `out.outputs` is a tuple, and assigning a one-element tuple leaves exactly
+        one output however many times it is called.
 
-        The figure still has to go through `display()` inside the context manager:
-        append_display_data() stores an output carrying no mime data at all, so a
-        plotly figure added that way renders as nothing.
+        The alternatives all failed. `with out: clear_output(wait=True); display(fig)`
+        appended a copy per redraw, so N redraws showed N stacked plots; plain
+        `clear_output()` did too; and `out.outputs = ()` before the context manager did
+        not help either, because the figure is not reliably captured into the widget in
+        the first place. `append_display_data()` stores an output with no mime data, so
+        a figure added that way renders as nothing.
+
+        `pio.to_json` rather than `figure.to_plotly_json()`: it encodes numpy arrays in
+        the binary form the renderer expects, where the raw dict would carry ndarrays
+        that cannot cross the comm.
         """
-        from IPython.display import display
+        import json
 
-        out.outputs = ()
-        with out:
-            display(figure)
+        import plotly.io as pio
+
+        out.outputs = (
+            {
+                "output_type": "display_data",
+                "data": {
+                    "application/vnd.plotly.v1+json": json.loads(pio.to_json(figure))
+                },
+                "metadata": {},
+            },
+        )
 
     @staticmethod
     def _log(out, *lines):
-        """Replace an Output widget's contents with text, for the same reason."""
-        out.outputs = ()
-        with out:
-            for line in lines:
-                print(line)
+        """Replace an Output widget's contents with text, assigned for the same reason."""
+        text = "\n".join(str(line) for line in lines)
+        out.outputs = (
+            {"output_type": "stream", "name": "stdout", "text": text + "\n"},
+        )
 
     # -- handlers ------------------------------------------------------------
 
@@ -575,9 +589,10 @@ class BandFitDashboard:
 # kernel restart. Band traces are found by name (fit_<id>_y0, y0_g<k>) rather than by
 # position, which is what lets bands be added and removed at runtime. The residual panel
 # is a separate figure rather than another check_plot subplot row, so check_plot needs no
-# knowledge of the dashboard. Output widgets are emptied by assigning outputs = ()
-# rather than via clear_output(), which the Output widget honours on neither the
-# wait=True nor the plain path, so redraws used to stack figures instead of
-# replacing them. Tying the FWHM mirrors W0 into the other width boxes,
+# knowledge of the dashboard. Output widgets are updated by ASSIGNING a one-element
+# `outputs` tuple holding the display bundle, which is the only approach with no append
+# path: clear_output(wait=True), plain clear_output() and clearing before a context
+# manager all left redraws stacking a new figure each time. Tying the FWHM mirrors W0
+# into the other width boxes,
 # disables them, and passes a scalar fwhm, matching fit_gaussians' own convention.
 # ---------------------------------------------------------------------------
