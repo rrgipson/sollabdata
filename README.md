@@ -138,8 +138,9 @@ pipelines, and several pieces only make sense in that setting:
   dash = data.fit_dashboard(
       "Positive", energies=[640], fwhm=[120], intens=[0.8],
       x_col="NANOMETERS", y_col="CD/DC [mdeg]",
+      replacing=globals().get("dash"),   # see the gotcha below
   )
-  dash          # display it as the cell's last expression
+  display(dash)
   ```
 
   Needs the `[widgets]` extra. "Show call" prints the matching `fit_gaussians(...)`
@@ -339,6 +340,14 @@ Things that will bite you, roughly in order of likelihood:
   then every y column of the second. That ordering is what `intens`, `low_bds`,
   `up_bds`, `scalar`, and the `Inten_y*` columns are indexed by. The function prints
   the trace list whenever more than one is being fit.
+- **Re-running a `fit_dashboard` cell stacks copies of the plot unless you pass
+  `replacing=`.** ipywidgets keeps widget models in a global registry and the frontend
+  keeps rendering any view bound to a live model, so the previous dashboard's views stay
+  on screen. They look identical and sit on the same data, so N runs read as N stacked
+  copies of one plot even though each dashboard drew once. Use
+  `replacing=globals().get("dash")`, or call `dash.close()` yourself. Copies already
+  accumulated survive both Clear All Outputs and a kernel restart — they live in the
+  editor's extension host, so clearing them means fully restarting the editor.
 - **`fit_dashboard` re-renders rather than updating in place, so zoom resets on each
   redraw.** Plotly's `FigureWidget`, which would allow in-place updates, raises
   `KeyError: 'uid'` from `_handler_js2py_traceDeltas` in plotly 7.0.0 and stays broken
