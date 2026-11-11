@@ -514,6 +514,62 @@ def test_fit_quality_reports_cost_and_convergence(abscd_spectra):
         assert field in summary
 
 
+# --- output plumbing: one figure, not a stack --------------------------------
+
+
+STALE = {"output_type": "stream", "name": "stdout", "text": "STALE RENDER\n"}
+
+
+def test_redraw_replaces_the_plot_instead_of_appending(dash):
+    """Each redraw must leave exactly one figure in the Output widget.
+
+    Regression: the dashboard used `with out: clear_output(wait=True); display(fig)`,
+    and the Output widget honours neither a pending clear nor a plain clear_output() on
+    that path, so every redraw appended another copy -- four redraws showed four
+    stacked plots, each updating together.
+
+    Checked by planting a marker output and confirming the redraw removes it. Under
+    pytest the replacement display does not itself land in `outputs` (the context
+    manager only captures inside a kernel), so the assertion is about the stale content
+    being gone rather than about the new content arriving.
+    """
+    dash._plot_out.outputs = (STALE,)
+    dash._resid_out.outputs = (STALE,)
+
+    dash._redraw()
+
+    assert STALE not in dash._plot_out.outputs
+    assert STALE not in dash._resid_out.outputs
+
+
+def test_repeated_redraws_do_not_accumulate(dash):
+    """Many redraws must not pile up outputs."""
+    for value in (610.0, 620.0, 630.0, 640.0):
+        dash.boxes[0].value = value
+    assert len(dash._plot_out.outputs) <= 1
+    assert len(dash._resid_out.outputs) <= 1
+
+
+def test_log_replaces_previous_messages(dash):
+    """The log box shows the latest message only, not a transcript."""
+    dash._log_out.outputs = (STALE,)
+    dash._on_code_click(None)
+    assert STALE not in dash._log_out.outputs
+
+
+def test_render_clears_before_displaying():
+    """_render empties the widget, which clear_output() does not do on this path."""
+    widgets = pytest.importorskip("ipywidgets")
+    import plotly.graph_objs as go
+
+    from sollabdata.fitdash import BandFitDashboard
+
+    out = widgets.Output()
+    out.outputs = (STALE,)
+    BandFitDashboard._render(out, go.Figure())
+    assert STALE not in out.outputs
+
+
 # ---------------------------------------------------------------------------
 # Written by RG (Robert Gipson). Created by Claude (Opus 5): tests for fitdash.py --
 # fit_call_source (validity, !r quoting of awkward names, optional xrange, and an

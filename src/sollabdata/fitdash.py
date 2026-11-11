@@ -411,12 +411,40 @@ class BandFitDashboard:
         finally:
             self._muted = False
 
+    # -- output plumbing -----------------------------------------------------
+
+    @staticmethod
+    def _render(out, figure):
+        """Replace an Output widget's contents with `figure`.
+
+        Empties the widget by assigning `outputs = ()` rather than calling
+        clear_output(). The Output widget does not honour a pending clear from
+        clear_output(wait=True) -- nor from clear_output() -- so every redraw appended
+        another copy of the figure instead of replacing it, and four redraws left four
+        stacked plots. Assigning the trait empties it synchronously.
+
+        The figure still has to go through `display()` inside the context manager:
+        append_display_data() stores an output carrying no mime data at all, so a
+        plotly figure added that way renders as nothing.
+        """
+        from IPython.display import display
+
+        out.outputs = ()
+        with out:
+            display(figure)
+
+    @staticmethod
+    def _log(out, *lines):
+        """Replace an Output widget's contents with text, for the same reason."""
+        out.outputs = ()
+        with out:
+            for line in lines:
+                print(line)
+
     # -- handlers ------------------------------------------------------------
 
     def _redraw(self, *_):
         """Recompute the band curves and residuals, then re-render."""
-        from IPython.display import clear_output, display
-
         self.redraws += 1
         centers, widths, intens = self.state()
         total, components = band_curves(self._x, centers, widths, intens)
@@ -424,17 +452,11 @@ class BandFitDashboard:
         self.fig.data[self._trace_idx[self._total_name]].y = total
         for k, comp in enumerate(components):
             self.fig.data[self._trace_idx[f"y0_g{k}"]].y = comp
-        with self._plot_out:
-            # wait=True holds the old render until the new one is ready, which is what
-            # keeps the swap from flashing
-            clear_output(wait=True)
-            display(self.fig)
+        self._render(self._plot_out, self.fig)
 
         if self.resid_fig is not None:
             self.resid_fig.data[0].y = self._y - total
-            with self._resid_out:
-                clear_output(wait=True)
-                display(self.resid_fig)
+            self._render(self._resid_out, self.resid_fig)
 
     def _on_param_change(self, change):
         if self._muted:
@@ -455,7 +477,6 @@ class BandFitDashboard:
         self._redraw()
 
     def _on_fit_click(self, _button):
-        from IPython.display import clear_output
 
         centers, widths, intens = self.state()
         self._pre_fit = (centers, widths, intens)  # so Revert can undo this
@@ -473,27 +494,21 @@ class BandFitDashboard:
         n = len(centers)
         self._set_state(results[:n], results[n : 2 * n], results[2 * n : 3 * n])
         self._redraw()
-        with self._log_out:
-            clear_output(wait=True)
-            print(details.to_markdown())
-            print()
-            print(fit_quality(fit))
+        self._log(self._log_out, details.to_markdown(), "", fit_quality(fit))
 
     def _on_revert_click(self, _button):
         """Restore the box values from just before the last fit."""
-        from IPython.display import clear_output
 
         if self._pre_fit is None:
-            with self._log_out:
-                clear_output(wait=True)
-                print("Nothing to revert -- no fit has been run since the last revert.")
+            self._log(
+                self._log_out,
+                "Nothing to revert -- no fit has been run since the last revert.",
+            )
             return
         self._set_state(*self._pre_fit)
         self._pre_fit = None
         self._redraw()
-        with self._log_out:
-            clear_output(wait=True)
-            print("Reverted to the values from before the last fit.")
+        self._log(self._log_out, "Reverted to the values from before the last fit.")
 
     def _on_add_band(self, _button):
         """Add a band where the current fit is worst.
@@ -515,36 +530,31 @@ class BandFitDashboard:
         self._rebuild(centers, widths, intens)
 
     def _on_remove_band(self, _button):
-        from IPython.display import clear_output
 
         centers, widths, intens = self.state()
         if len(centers) <= 1:
-            with self._log_out:
-                clear_output(wait=True)
-                print("Cannot remove the last band.")
+            self._log(self._log_out, "Cannot remove the last band.")
             return
         self._pre_fit = None
         self._rebuild(centers[:-1], widths[:-1], intens[:-1])
 
     def _on_code_click(self, _button):
-        from IPython.display import clear_output
 
         centers, widths, intens = self.state()
-        with self._log_out:
-            clear_output(wait=True)
-            print(
-                fit_call_source(
-                    self._id,
-                    centers,
-                    self._fwhm_arg(widths),
-                    intens,
-                    x_col=self._x_col,
-                    y_cols=self._y_col,
-                    xrange=self._xrange,
-                    var_name=self._var_name,
-                    precision=self._precision,
-                )
-            )
+        self._log(
+            self._log_out,
+            fit_call_source(
+                self._id,
+                centers,
+                self._fwhm_arg(widths),
+                intens,
+                x_col=self._x_col,
+                y_cols=self._y_col,
+                xrange=self._xrange,
+                var_name=self._var_name,
+                precision=self._precision,
+            ),
+        )
 
     # -- display -------------------------------------------------------------
 
@@ -565,6 +575,9 @@ class BandFitDashboard:
 # kernel restart. Band traces are found by name (fit_<id>_y0, y0_g<k>) rather than by
 # position, which is what lets bands be added and removed at runtime. The residual panel
 # is a separate figure rather than another check_plot subplot row, so check_plot needs no
-# knowledge of the dashboard. Tying the FWHM mirrors W0 into the other width boxes,
+# knowledge of the dashboard. Output widgets are emptied by assigning outputs = ()
+# rather than via clear_output(), which the Output widget honours on neither the
+# wait=True nor the plain path, so redraws used to stack figures instead of
+# replacing them. Tying the FWHM mirrors W0 into the other width boxes,
 # disables them, and passes a scalar fwhm, matching fit_gaussians' own convention.
 # ---------------------------------------------------------------------------
