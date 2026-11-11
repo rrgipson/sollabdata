@@ -221,7 +221,8 @@ class BandFitDashboard:
         panels.append(self._log_out)
         self.view = widgets.VBox(panels)
 
-        self._rebuild(energies, fwhm, intens)
+        # Build the boxes and figure, but do NOT draw yet -- see _ipython_display_.
+        self._rebuild(energies, fwhm, intens, draw=False)
 
     # -- construction helpers ----------------------------------------------
 
@@ -316,11 +317,15 @@ class BandFitDashboard:
         """Round to the configured precision, so the boxes do not show noise digits."""
         return round(float(value), self._precision)
 
-    def _rebuild(self, energies, fwhm, intens):
+    def _rebuild(self, energies, fwhm, intens, draw=True):
         """Rebuild boxes and figure for a (possibly new) band count, then redraw.
 
         Called at construction and whenever a band is added or removed. The figure has
         to be rebuilt because its trace count changes with the band count.
+
+        `draw=False` at construction: writing into an Output widget that has not been
+        displayed yet is what made redraws stack, since the deferred clear from
+        clear_output(wait=True) has no displayed widget to apply to.
         """
         self.boxes, rows = self._make_boxes(energies, fwhm, intens)
         for box in self.boxes:
@@ -348,7 +353,10 @@ class BandFitDashboard:
                 f"{missing}. It returned {[t.name for t in self.fig.data]!r}."
             )
         self._apply_tie()
-        self._redraw()
+        # Always bring the figure data up to date; only the rendering is deferred.
+        self._recompute()
+        if draw:
+            self._redraw()
 
     # -- state ---------------------------------------------------------------
 
@@ -417,59 +425,55 @@ class BandFitDashboard:
     def _render(out, figure):
         """Replace an Output widget's contents with `figure`.
 
-        Builds the display bundle and *assigns* it, rather than displaying into the
-        widget as a context manager. That is the only approach with no append path at
-        all: `out.outputs` is a tuple, and assigning a one-element tuple leaves exactly
-        one output however many times it is called.
+        This is the plain `with out: clear_output(wait=True); display(fig)` pattern,
+        which is the one confirmed to actually render a plotly figure in VSCode. Two
+        alternatives were tried and both failed there: assigning a hand-built
+        `application/vnd.plotly.v1+json` bundle to `outputs` rendered nothing and hung
+        the cell, and `append_display_data()` stores an output with no mime data at all.
 
-        The alternatives all failed. `with out: clear_output(wait=True); display(fig)`
-        appended a copy per redraw, so N redraws showed N stacked plots; plain
-        `clear_output()` did too; and `out.outputs = ()` before the context manager did
-        not help either, because the figure is not reliably captured into the widget in
-        the first place. `append_display_data()` stores an output with no mime data, so
-        a figure added that way renders as nothing.
-
-        `pio.to_json` rather than `figure.to_plotly_json()`: it encodes numpy arrays in
-        the binary form the renderer expects, where the raw dict would carry ndarrays
-        that cannot cross the comm.
+        Redraws stacking a new figure each time was an *ordering* problem rather than a
+        clearing one -- see `_ipython_display_`, which is where the first draw happens
+        so that the widget exists before anything is written into it.
         """
-        import json
+        from IPython.display import clear_output, display
 
-        import plotly.io as pio
-
-        out.outputs = (
-            {
-                "output_type": "display_data",
-                "data": {
-                    "application/vnd.plotly.v1+json": json.loads(pio.to_json(figure))
-                },
-                "metadata": {},
-            },
-        )
+        with out:
+            clear_output(wait=True)
+            display(figure)
 
     @staticmethod
     def _log(out, *lines):
-        """Replace an Output widget's contents with text, assigned for the same reason."""
-        text = "\n".join(str(line) for line in lines)
-        out.outputs = (
-            {"output_type": "stream", "name": "stdout", "text": text + "\n"},
-        )
+        """Replace an Output widget's contents with text."""
+        from IPython.display import clear_output
+
+        with out:
+            clear_output(wait=True)
+            for line in lines:
+                print(line)
 
     # -- handlers ------------------------------------------------------------
+
+    def _recompute(self):
+        """Update the figures' data from the current box values, without rendering.
+
+        Split from _redraw so the figures are always numerically current even before
+        anything has been displayed -- construction recomputes but does not render.
+        """
+        centers, widths, intens = self.state()
+        total, components = band_curves(self._x, centers, widths, intens)
+        self.fig.data[self._trace_idx[self._total_name]].y = total
+        for k, comp in enumerate(components):
+            self.fig.data[self._trace_idx[f"y0_g{k}"]].y = comp
+        if self.resid_fig is not None:
+            self.resid_fig.data[0].y = self._y - total
+        return total
 
     def _redraw(self, *_):
         """Recompute the band curves and residuals, then re-render."""
         self.redraws += 1
-        centers, widths, intens = self.state()
-        total, components = band_curves(self._x, centers, widths, intens)
-
-        self.fig.data[self._trace_idx[self._total_name]].y = total
-        for k, comp in enumerate(components):
-            self.fig.data[self._trace_idx[f"y0_g{k}"]].y = comp
+        self._recompute()
         self._render(self._plot_out, self.fig)
-
         if self.resid_fig is not None:
-            self.resid_fig.data[0].y = self._y - total
             self._render(self._resid_out, self.resid_fig)
 
     def _on_param_change(self, change):
@@ -573,9 +577,16 @@ class BandFitDashboard:
     # -- display -------------------------------------------------------------
 
     def _ipython_display_(self):
+        """Display the view, then draw into it.
+
+        Order matters: the Output widgets have to exist in the frontend before anything
+        is written into them, otherwise each redraw's deferred clear has nothing to
+        apply to and the figures stack up instead of replacing each other.
+        """
         from IPython.display import display
 
         display(self.view)
+        self._redraw()
 
 
 # ---------------------------------------------------------------------------
@@ -589,10 +600,12 @@ class BandFitDashboard:
 # kernel restart. Band traces are found by name (fit_<id>_y0, y0_g<k>) rather than by
 # position, which is what lets bands be added and removed at runtime. The residual panel
 # is a separate figure rather than another check_plot subplot row, so check_plot needs no
-# knowledge of the dashboard. Output widgets are updated by ASSIGNING a one-element
-# `outputs` tuple holding the display bundle, which is the only approach with no append
-# path: clear_output(wait=True), plain clear_output() and clearing before a context
-# manager all left redraws stacking a new figure each time. Tying the FWHM mirrors W0
+# knowledge of the dashboard. Rendering writes into the Output widget with
+# clear_output(wait=True) + display(), which is the path confirmed to render a plotly
+# figure in VSCode; assigning a hand-built mime bundle to `outputs` rendered nothing and
+# hung the cell. Redraws stacking figures was an ordering problem: nothing is written
+# into an Output until the view has been displayed, so the first draw happens in
+# _ipython_display_ and construction only recomputes. Tying the FWHM mirrors W0
 # into the other width boxes,
 # disables them, and passes a scalar fwhm, matching fit_gaussians' own convention.
 # ---------------------------------------------------------------------------

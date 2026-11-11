@@ -218,21 +218,19 @@ def test_fit_button_does_not_print_the_fit_summary(dash, capsys):
     """The Fit handler passes verbose=0, so the details table and the stored-slice
     message go to the log widget rather than flooding the cell on every click.
 
-    Nothing should reach stdout at all now: fit_gaussians runs with verbose=0, and the
-    dashboard writes its own summary into the log widget by assigning the output bundle
-    rather than printing, so it no longer leaks out of the widget under pytest either.
+    This cannot assert empty stdout: the log widget captures only inside a kernel, so
+    under pytest the dashboard's own deliberate summary lands in stdout. The claim being
+    checked is that fit_gaussians did not add a second copy of it.
     """
     capsys.readouterr()
     dash._on_fit_click(None)
     out = capsys.readouterr().out
 
     assert "Fit params stored in info_df" not in out  # fit_gaussians' own message
-    assert "Inten_y0" not in out  # the details table stays inside the log widget
-
-    # ...where it is actually present
-    logged = dash._log_out.outputs[0]["text"]
-    assert "Inten_y0" in logged
-    assert "cost=" in logged  # the fit-quality line rides along
+    # exactly one details table -- the dashboard's. Two would mean verbose=0 was not
+    # threaded through to fit_gaussians.
+    assert out.count("Inten_y0") == 1
+    assert "cost=" in out  # the fit-quality line rides along
 
 
 def test_show_call_emits_the_current_box_values(dash):
@@ -521,60 +519,57 @@ def test_fit_quality_reports_cost_and_convergence(abscd_spectra):
 STALE = {"output_type": "stream", "name": "stdout", "text": "STALE RENDER\n"}
 
 
-def test_redraw_replaces_the_plot_instead_of_appending(dash):
-    """Each redraw must leave exactly one figure in the Output widget.
+def test_render_clears_before_it_displays(monkeypatch):
+    """_render must clear the widget before adding the new figure, in that order.
 
-    Regression: the dashboard used `with out: clear_output(wait=True); display(fig)`,
-    and the Output widget honours neither a pending clear nor a plain clear_output() on
-    that path, so every redraw appended another copy -- four redraws showed four
-    stacked plots, each updating together.
-
-    Because the bundle is assigned rather than displayed into the widget, the count is
-    observable without a kernel: exactly one output, carrying the plotly mime type.
+    The stacking bug was a redraw adding a figure without the previous one going away.
+    The output count itself cannot be asserted here: this render path displays into the
+    widget as a context manager, which only captures inside a kernel, so `outputs` stays
+    empty under pytest. What is checkable is that the clear happens and happens first.
     """
-    dash._plot_out.outputs = (STALE,)
-    dash._resid_out.outputs = (STALE,)
-
-    dash._redraw()
-
-    for out in (dash._plot_out, dash._resid_out):
-        assert len(out.outputs) == 1
-        assert STALE not in out.outputs
-        assert list(out.outputs[0]["data"]) == ["application/vnd.plotly.v1+json"]
-
-
-def test_repeated_redraws_do_not_accumulate(dash):
-    """Many redraws must not pile up outputs."""
-    for value in (610.0, 620.0, 630.0, 640.0):
-        dash.boxes[0].value = value
-    assert dash.redraws >= 4  # the redraws really happened
-    assert len(dash._plot_out.outputs) == 1
-    assert len(dash._resid_out.outputs) == 1
-
-
-def test_log_replaces_previous_messages(dash):
-    """The log box shows the latest message only, not a transcript."""
-    dash._log_out.outputs = (STALE,)
-    for _ in range(3):
-        dash._on_code_click(None)
-    assert len(dash._log_out.outputs) == 1
-    assert STALE not in dash._log_out.outputs
-    assert "fit_gaussians(" in dash._log_out.outputs[0]["text"]
-
-
-def test_render_clears_before_displaying():
-    """_render empties the widget, which clear_output() does not do on this path."""
     widgets = pytest.importorskip("ipywidgets")
     import plotly.graph_objs as go
+    import IPython.display as ipd
 
     from sollabdata.fitdash import BandFitDashboard
 
-    out = widgets.Output()
-    out.outputs = (STALE,)
-    for _ in range(5):
-        BandFitDashboard._render(out, go.Figure())
-    assert len(out.outputs) == 1
-    assert STALE not in out.outputs
+    calls = []
+    monkeypatch.setattr(ipd, "clear_output", lambda **kw: calls.append(("clear", kw)))
+    monkeypatch.setattr(ipd, "display", lambda obj, **kw: calls.append(("display", obj)))
+
+    BandFitDashboard._render(widgets.Output(), go.Figure())
+
+    assert [c[0] for c in calls] == ["clear", "display"]
+    assert calls[0][1] == {"wait": True}  # wait=True is what avoids the blank flash
+
+
+def test_construction_does_not_render_before_the_widget_exists(dash):
+    """Nothing is written into the Output widgets until the view is displayed.
+
+    Writing into an Output that the frontend has not seen yet is what made each redraw
+    stack another figure, so construction recomputes the figure data but renders
+    nothing. The first render happens in _ipython_display_.
+    """
+    assert dash.redraws == 0
+    assert dash._plot_out.outputs == ()
+    assert dash._resid_out.outputs == ()
+
+    # but the figure data is already current, so a later display draws the right thing
+    expected, _ = band_curves(dash._x, *dash.state())
+    assert _trace(dash, f"fit_{dash._id}_y0").y == pytest.approx(expected)
+
+
+def test_displaying_the_dashboard_draws_it(dash, monkeypatch):
+    """_ipython_display_ shows the view and then draws into it, in that order."""
+    import IPython.display as ipd
+
+    shown = []
+    monkeypatch.setattr(ipd, "display", lambda obj, **kw: shown.append(obj))
+
+    dash._ipython_display_()
+
+    assert shown[0] is dash.view  # the view goes out first
+    assert dash.redraws == 1  # and only then is anything drawn into it
 
 
 # ---------------------------------------------------------------------------
